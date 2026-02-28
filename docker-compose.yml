@@ -27,7 +27,6 @@ services:
       NHL_SYNC_ENABLED: "true"
       RUN_SYNC_LOOP: "false"
       YAHOO_ENABLED: "false"
-      ADMIN_API_KEY: change-me-admin-key
     depends_on:
       db:
         condition: service_healthy
@@ -47,7 +46,6 @@ services:
       NHL_SYNC_ENABLED: "true"
       RUN_SYNC_LOOP: "true"
       YAHOO_ENABLED: "false"
-      ADMIN_API_KEY: change-me-admin-key
     depends_on:
       db:
         condition: service_healthy

@@ -1,16 +1,20 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models.player import Player
+from app.models.player import Player, PlayerGameStats
+from app.models.sync_run import SyncCheckpoint, SyncRun
 from app.models.sync_state import SyncState
 from app.models.user import User
+from app.routers.auth import get_current_user
 from app.services.analytics import AnalyticsService
 from app.services.nhl_sync import (
     sync_all_game_logs,
+    sync_game_center_full_backfill,
     sync_game_center_game_logs,
     sync_player_game_log,
     sync_players,
@@ -25,12 +29,9 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 settings = get_settings()
 
 
-def require_admin_key(request: Request) -> None:
-    if not settings.admin_api_key:
-        return
-    api_key = request.headers.get("X-Admin-Key")
-    if api_key != settings.admin_api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+def require_admin_user(current_user: User = Depends(get_current_user)) -> User:
+    # v2 single-owner mode: any authenticated user is treated as admin.
+    return current_user
 
 
 def _set_sync_state(db: Session, key: str, when: datetime | None = None) -> None:
@@ -44,14 +45,14 @@ def _set_sync_state(db: Session, key: str, when: datetime | None = None) -> None
 
 
 @router.get("")
-def admin_root(request: Request):
-    require_admin_key(request)
+def admin_root(_: User = Depends(require_admin_user)):
     return {
         "name": "Forecheck v2 Admin",
         "status_endpoint": "/admin/status",
         "sync_endpoints": [
             "/admin/sync/players",
             "/admin/sync/game-logs",
+            "/admin/sync/game-logs/full",
             "/admin/sync/rolling-stats",
             "/admin/sync/weekly-schedule",
             "/admin/sync/ownership",
@@ -61,10 +62,13 @@ def admin_root(request: Request):
 
 
 @router.get("/status")
-def admin_status(request: Request, db: Session = Depends(get_db)):
-    require_admin_key(request)
+def admin_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
+):
     states = db.query(SyncState).all()
     state_map = {state.key: state.last_run_at for state in states}
+    checkpoint = db.query(SyncCheckpoint).filter(SyncCheckpoint.job == "nhl_game_logs").first()
 
     yahoo_user = (
         db.query(User)
@@ -74,6 +78,13 @@ def admin_status(request: Request, db: Session = Depends(get_db)):
         )
         .first()
     )
+    game_log_summary = db.query(
+        func.count(PlayerGameStats.id),
+        func.min(PlayerGameStats.date),
+        func.max(PlayerGameStats.date),
+    ).one()
+    recent_runs = db.query(SyncRun).order_by(SyncRun.started_at.desc()).limit(10).all()
+    running_jobs = [run.job for run in recent_runs if run.status == "running"]
 
     return {
         "app_mode": settings.app_mode,
@@ -87,6 +98,22 @@ def admin_status(request: Request, db: Session = Depends(get_db)):
         "last_rolling_stats_at": state_map.get("rolling_stats"),
         "last_weekly_schedule_at": state_map.get("weekly_schedule"),
         "last_ownership_sync_at": state_map.get("yahoo_ownership"),
+        "game_log_checkpoint_date": checkpoint.last_game_date if checkpoint else None,
+        "game_log_row_count": int(game_log_summary[0] or 0),
+        "game_log_min_date": game_log_summary[1],
+        "game_log_max_date": game_log_summary[2],
+        "running_jobs": running_jobs,
+        "recent_runs": [
+            {
+                "job": run.job,
+                "status": run.status,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
+                "row_count": run.row_count,
+                "error": run.error,
+            }
+            for run in recent_runs
+        ],
         "yahoo_enabled": settings.yahoo_enabled,
         "yahoo_connected": settings.yahoo_enabled and has_yahoo_credentials(yahoo_user),
         "server_time_utc": datetime.now(timezone.utc),
@@ -95,11 +122,10 @@ def admin_status(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/player/refresh")
 def refresh_player_logs(
-    request: Request,
     player_id: str = Query(...),
     db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
 ):
-    require_admin_key(request)
     target = db.query(Player).filter(Player.id == player_id).first()
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
@@ -110,8 +136,7 @@ def refresh_player_logs(
 
 
 @router.post("/sync/players")
-def sync_players_endpoint(request: Request, db: Session = Depends(get_db)):
-    require_admin_key(request)
+def sync_players_endpoint(db: Session = Depends(get_db), _: User = Depends(require_admin_user)):
     count = sync_players(db)
     _set_sync_state(db, "players")
     return {"status": "ok", "updated": count}
@@ -119,12 +144,11 @@ def sync_players_endpoint(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/sync/game-logs")
 def sync_game_logs_endpoint(
-    request: Request,
     backfill_days: int | None = Query(default=None, ge=1, le=30),
     delay_seconds: float | None = Query(default=None, ge=0),
     db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
 ):
-    require_admin_key(request)
     count = sync_game_center_game_logs(
         db,
         season_id=current_season_id(),
@@ -135,17 +159,32 @@ def sync_game_logs_endpoint(
     return {"status": "ok", "updated": count}
 
 
+@router.post("/sync/game-logs/full")
+def sync_game_logs_full_endpoint(
+    reset_existing: bool = Query(default=False),
+    delay_seconds: float | None = Query(default=None, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
+):
+    count = sync_game_center_full_backfill(
+        db,
+        season_id=current_season_id(),
+        delay_seconds=delay_seconds,
+        reset_existing=reset_existing,
+    )
+    _set_sync_state(db, "nhl_game_logs")
+    return {"status": "ok", "updated": count}
+
+
 @router.post("/sync/rolling-stats")
-def sync_rolling_stats_endpoint(request: Request, db: Session = Depends(get_db)):
-    require_admin_key(request)
+def sync_rolling_stats_endpoint(db: Session = Depends(get_db), _: User = Depends(require_admin_user)):
     count = AnalyticsService.update_all_rolling_stats(db)
     _set_sync_state(db, "rolling_stats")
     return {"status": "ok", "updated": count}
 
 
 @router.post("/sync/weekly-schedule")
-def sync_weekly_schedule_endpoint(request: Request, db: Session = Depends(get_db)):
-    require_admin_key(request)
+def sync_weekly_schedule_endpoint(db: Session = Depends(get_db), _: User = Depends(require_admin_user)):
     today = datetime.now(timezone.utc).date()
     dates = [datetime.combine(today - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)]
     for offset in range(0, 14):
@@ -157,8 +196,7 @@ def sync_weekly_schedule_endpoint(request: Request, db: Session = Depends(get_db
 
 
 @router.post("/sync/ownership")
-async def sync_ownership_endpoint(request: Request, db: Session = Depends(get_db)):
-    require_admin_key(request)
+async def sync_ownership_endpoint(db: Session = Depends(get_db), _: User = Depends(require_admin_user)):
     if not settings.yahoo_enabled:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -178,8 +216,7 @@ async def sync_ownership_endpoint(request: Request, db: Session = Depends(get_db
 
 
 @router.post("/sync/pipeline")
-async def sync_pipeline_endpoint(request: Request, db: Session = Depends(get_db)):
-    require_admin_key(request)
+async def sync_pipeline_endpoint(db: Session = Depends(get_db), _: User = Depends(require_admin_user)):
 
     players_updated = sync_players(db)
     _set_sync_state(db, "players")

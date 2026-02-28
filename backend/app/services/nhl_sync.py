@@ -1252,16 +1252,27 @@ def sync_game_center_game_logs(
     season_id = season_id or current_season_id()
     game_type = current_game_type()
     checkpoint = _get_sync_checkpoint(db, "nhl_game_logs")
-    if checkpoint is None:
-        logger.info("No game log checkpoint found; bootstrapping via GameCenter.")
+    has_checkpoint = bool(checkpoint and checkpoint.last_game_date)
+    if not has_checkpoint:
+        logger.info(
+            "No game log checkpoint found; bootstrapping full-season GameCenter sync from %s",
+            _season_start_date(season_id).date().isoformat(),
+        )
 
     run = _start_sync_run(db, "nhl_game_logs")
 
-    start_date = checkpoint.last_game_date.date() if checkpoint and checkpoint.last_game_date else None
-    if start_date is None:
-        window_days = backfill_days if backfill_days is not None else settings.nhl_game_log_backfill_days
-        start_date = (datetime.now(timezone.utc) - timedelta(days=window_days)).date()
     end_date = datetime.now(timezone.utc).date()
+    if has_checkpoint and checkpoint and checkpoint.last_game_date:
+        start_date = checkpoint.last_game_date.date()
+        # Allow callers to force a wider backfill window than the checkpoint.
+        if backfill_days is not None:
+            forced_start = end_date - timedelta(days=max(backfill_days, 0))
+            if forced_start < start_date:
+                start_date = forced_start
+    else:
+        start_date = _season_start_date(season_id).date()
+    if start_date > end_date:
+        start_date = end_date
 
     dates: list[datetime] = []
     current = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
@@ -1713,12 +1724,12 @@ def _maybe_run_nightly_sync(db: Session, season_id: str) -> None:
     last_run = _normalize_utc(state.last_run_at) if state else None
     target_hour = settings.nhl_nightly_sync_hour_utc
     target_today = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
-    should_run = now >= target_today and (last_run is None or last_run < target_today)
+    should_run = last_run is None or (now >= target_today and last_run < target_today)
     if should_run:
-        logger.info("Starting nightly sync...")
+        logger.info("Starting initial sync bootstrap..." if last_run is None else "Starting nightly sync...")
 
         # 1. Sync all game logs
-        game_log_count = sync_game_center_game_logs(db, season_id=season_id, backfill_days=1)
+        game_log_count = sync_game_center_game_logs(db, season_id=season_id)
         logger.info(f"Synced {game_log_count} game log entries")
         _set_sync_state(db, "nhl_game_logs", now)
 

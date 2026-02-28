@@ -32,6 +32,7 @@ Open:
 1. Open `http://localhost:6767`.
 2. Complete owner bootstrap form.
 3. Sign in with the owner credentials.
+4. Keep the stack running for initial data bootstrap; first full-season GameCenter sync can take several minutes.
 
 ## Services
 
@@ -52,6 +53,8 @@ Open:
 - `GET/POST/PUT/DELETE /leagues`
 - `GET /schedule/week`
 - `POST /admin/sync/pipeline`
+- `GET /admin/status`
+- `POST /admin/sync/game-logs/full`
 
 ## Environment defaults
 
@@ -59,7 +62,8 @@ See [backend/.env.example](/Users/mylesresnick/xCode Projects/Forecheck Fantasy/
 
 ## Security notes
 
-- Set `SECRET_KEY` and `ADMIN_API_KEY` before exposing beyond localhost.
+- Set `SECRET_KEY` before exposing beyond localhost.
+- In v2 single-owner mode, any authenticated user is treated as admin.
 - Keep `ENABLE_REGISTRATION=false` for single-owner mode.
 
 ## License

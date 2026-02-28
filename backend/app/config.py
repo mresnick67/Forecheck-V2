@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     nhl_game_center_delay_seconds: float = 0.25
     nhl_sync_commit_batch_size: int = 500
     nhl_player_on_demand_sync: bool = False
-    admin_api_key: str | None = None
 
     # Yahoo Fantasy API settings
     yahoo_enabled: bool = False

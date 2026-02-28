@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
-from app.routers.auth import get_current_user, get_current_user_optional
+from app.routers.auth import get_current_user
 from app.services.yahoo_oauth_service import (
     exchange_code_for_tokens,
     refresh_access_token,
@@ -43,21 +43,10 @@ def _ensure_enabled() -> None:
         )
 
 
-def _get_admin_user(db: Session, user_id: Optional[str]) -> Optional[User]:
-    query = db.query(User)
-    if user_id:
-        return query.filter(User.id == user_id).first()
-    return query.order_by(User.created_at.asc()).first()
-
-
 @router.get("/login")
 async def yahoo_login(
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
-    key: Optional[str] = Query(None, description="Admin key for admin-initiated OAuth"),
+    current_user: User = Depends(get_current_user),
     redirect: bool = Query(True, description="Redirect to Yahoo auth URL"),
-    user_id: Optional[str] = Query(None, description="User ID to attach Yahoo tokens"),
 ):
     _ensure_enabled()
     if not settings.yahoo_client_id:
@@ -65,20 +54,6 @@ async def yahoo_login(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Yahoo API not configured (missing YAHOO_CLIENT_ID)",
         )
-
-    if not current_user:
-        admin_key = request.headers.get("X-Admin-Key") or key
-        if not settings.admin_api_key or admin_key != settings.admin_api_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Not authenticated",
-            )
-        current_user = _get_admin_user(db, user_id)
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No eligible user found for Yahoo connection",
-            )
 
     state = secrets.token_urlsafe(32)
     _oauth_states[state] = current_user.id
