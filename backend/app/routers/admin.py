@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import get_db
 from app.models.player import Player, PlayerGameStats
+from app.models.scan import Scan
 from app.models.sync_run import SyncCheckpoint, SyncRun
 from app.models.sync_state import SyncState
 from app.models.user import User
@@ -20,6 +21,7 @@ from app.services.nhl_sync import (
     sync_players,
     sync_schedule_for_dates,
 )
+from app.services.scan_evaluator import ScanEvaluatorService
 from app.services.season import current_season_id
 from app.services.week_schedule import update_current_week_schedule
 from app.services.yahoo_oauth_service import has_yahoo_credentials
@@ -42,6 +44,18 @@ def _set_sync_state(db: Session, key: str, when: datetime | None = None) -> None
     else:
         db.add(SyncState(key=key, last_run_at=now))
     db.commit()
+
+
+def _refresh_scan_counts(db: Session, stale_minutes: int = 30, force: bool = False) -> int:
+    scans = db.query(Scan).all()
+    if not scans:
+        return 0
+    return ScanEvaluatorService.refresh_match_counts(
+        db,
+        scans,
+        stale_minutes=stale_minutes,
+        force=force,
+    )
 
 
 @router.get("")
@@ -96,6 +110,7 @@ def admin_status(
         "last_player_sync_at": state_map.get("players"),
         "last_game_log_sync_at": state_map.get("nhl_game_logs"),
         "last_rolling_stats_at": state_map.get("rolling_stats"),
+        "last_scan_counts_at": state_map.get("scan_counts"),
         "last_weekly_schedule_at": state_map.get("weekly_schedule"),
         "last_ownership_sync_at": state_map.get("yahoo_ownership"),
         "game_log_checkpoint_date": checkpoint.last_game_date if checkpoint else None,
@@ -146,6 +161,8 @@ def sync_players_endpoint(db: Session = Depends(get_db), _: User = Depends(requi
 def sync_game_logs_endpoint(
     backfill_days: int | None = Query(default=None, ge=1, le=30),
     delay_seconds: float | None = Query(default=None, ge=0),
+    update_rolling: bool = True,
+    refresh_scan_counts: bool = True,
     db: Session = Depends(get_db),
     _: User = Depends(require_admin_user),
 ):
@@ -156,13 +173,30 @@ def sync_game_logs_endpoint(
         delay_seconds=delay_seconds,
     )
     _set_sync_state(db, "nhl_game_logs")
-    return {"status": "ok", "updated": count}
+
+    rolling_updated = None
+    scan_counts_updated = None
+    if update_rolling:
+        rolling_updated = AnalyticsService.update_all_rolling_stats(db)
+        _set_sync_state(db, "rolling_stats")
+    if refresh_scan_counts:
+        scan_counts_updated = _refresh_scan_counts(db, force=True)
+        _set_sync_state(db, "scan_counts")
+
+    return {
+        "status": "ok",
+        "updated": count,
+        "rolling_stats_updated": rolling_updated,
+        "scan_counts_updated": scan_counts_updated,
+    }
 
 
 @router.post("/sync/game-logs/full")
 def sync_game_logs_full_endpoint(
     reset_existing: bool = Query(default=False),
     delay_seconds: float | None = Query(default=None, ge=0),
+    update_rolling: bool = True,
+    refresh_scan_counts: bool = True,
     db: Session = Depends(get_db),
     _: User = Depends(require_admin_user),
 ):
@@ -173,14 +207,37 @@ def sync_game_logs_full_endpoint(
         reset_existing=reset_existing,
     )
     _set_sync_state(db, "nhl_game_logs")
-    return {"status": "ok", "updated": count}
+
+    rolling_updated = None
+    scan_counts_updated = None
+    if update_rolling:
+        rolling_updated = AnalyticsService.update_all_rolling_stats(db)
+        _set_sync_state(db, "rolling_stats")
+    if refresh_scan_counts:
+        scan_counts_updated = _refresh_scan_counts(db, force=True)
+        _set_sync_state(db, "scan_counts")
+
+    return {
+        "status": "ok",
+        "updated": count,
+        "rolling_stats_updated": rolling_updated,
+        "scan_counts_updated": scan_counts_updated,
+    }
 
 
 @router.post("/sync/rolling-stats")
-def sync_rolling_stats_endpoint(db: Session = Depends(get_db), _: User = Depends(require_admin_user)):
+def sync_rolling_stats_endpoint(
+    refresh_scan_counts: bool = True,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
+):
     count = AnalyticsService.update_all_rolling_stats(db)
     _set_sync_state(db, "rolling_stats")
-    return {"status": "ok", "updated": count}
+    scan_counts_updated = None
+    if refresh_scan_counts:
+        scan_counts_updated = _refresh_scan_counts(db, force=True)
+        _set_sync_state(db, "scan_counts")
+    return {"status": "ok", "updated": count, "scan_counts_updated": scan_counts_updated}
 
 
 @router.post("/sync/weekly-schedule")
@@ -234,6 +291,8 @@ async def sync_pipeline_endpoint(db: Session = Depends(get_db), _: User = Depend
 
     rolling_updated = AnalyticsService.update_all_rolling_stats(db)
     _set_sync_state(db, "rolling_stats")
+    scan_counts_updated = _refresh_scan_counts(db, force=True)
+    _set_sync_state(db, "scan_counts")
 
     yahoo_updated = None
     if settings.yahoo_enabled:
@@ -248,5 +307,6 @@ async def sync_pipeline_endpoint(db: Session = Depends(get_db), _: User = Depend
         "weekly_schedule_updated": schedule_updated,
         "game_logs_updated": game_logs_updated,
         "rolling_stats_updated": rolling_updated,
+        "scan_counts_updated": scan_counts_updated,
         "yahoo_updated": yahoo_updated,
     }

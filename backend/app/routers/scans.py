@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
-from datetime import datetime
 import uuid
 
 from app.database import get_db
@@ -155,41 +154,78 @@ def _apply_scan_preferences(
     return filtered
 
 
+def _build_scan_query(
+    db: Session,
+    current_user: UserModel | None,
+    include_presets: bool,
+):
+    query = db.query(ScanModel)
+    if current_user:
+        if include_presets:
+            return query.filter(
+                (ScanModel.is_preset == True) |
+                (ScanModel.user_id == current_user.id)
+            )
+        return query.filter(ScanModel.user_id == current_user.id)
+    if include_presets:
+        return query.filter(ScanModel.is_preset == True)
+    return query.filter(ScanModel.id == "__no_scans__")
+
+
+def _attach_scan_preferences(
+    db: Session,
+    scans: List[ScanModel],
+    current_user: UserModel | None,
+    include_hidden: bool,
+) -> List[ScanModel]:
+    if not current_user:
+        return scans
+    preset_ids = [scan.id for scan in scans if scan.is_preset]
+    if not preset_ids:
+        return scans
+    prefs = db.query(ScanPreference).filter(
+        ScanPreference.user_id == current_user.id,
+        ScanPreference.scan_id.in_(preset_ids),
+    ).all()
+    pref_map = {pref.scan_id: pref for pref in prefs}
+    return _apply_scan_preferences(scans, pref_map, include_hidden)
+
+
+def _refresh_scan_match_counts(
+    db: Session,
+    scans: List[ScanModel],
+    stale_minutes: int = 30,
+    force: bool = False,
+) -> None:
+    ScanEvaluatorService.refresh_match_counts(
+        db,
+        scans,
+        stale_minutes=stale_minutes,
+        force=force,
+    )
+
+
 @router.get("", response_model=List[Scan])
 async def get_scans(
     db: Session = Depends(get_db),
     current_user: UserModel = Depends(get_current_user_optional),
     include_presets: bool = True,
     include_hidden: bool = False,
+    refresh_counts: bool = False,
+    stale_minutes: int = Query(30, ge=1, le=1440),
+    force_refresh: bool = False,
 ):
     """Get all scans (presets and user's custom scans)."""
     ensure_preset_scans(db)
-
-    query = db.query(ScanModel)
-
-    if current_user:
-        # Get preset scans and user's custom scans
-        if include_presets:
-            query = query.filter(
-                (ScanModel.is_preset == True) |
-                (ScanModel.user_id == current_user.id)
-            )
-        else:
-            query = query.filter(ScanModel.user_id == current_user.id)
-    else:
-        # Only preset scans for unauthenticated users
-        query = query.filter(ScanModel.is_preset == True)
-
-    scans = query.all()
-    if current_user:
-        preset_ids = [scan.id for scan in scans if scan.is_preset]
-        if preset_ids:
-            prefs = db.query(ScanPreference).filter(
-                ScanPreference.user_id == current_user.id,
-                ScanPreference.scan_id.in_(preset_ids),
-            ).all()
-            pref_map = {pref.scan_id: pref for pref in prefs}
-            scans = _apply_scan_preferences(scans, pref_map, include_hidden)
+    scans = _build_scan_query(db, current_user, include_presets).all()
+    scans = _attach_scan_preferences(db, scans, current_user, include_hidden)
+    if refresh_counts:
+        _refresh_scan_match_counts(
+            db,
+            scans,
+            stale_minutes=stale_minutes,
+            force=force_refresh,
+        )
     return scans
 
 
@@ -198,18 +234,21 @@ async def get_preset_scans(
     db: Session = Depends(get_db),
     current_user: UserModel = Depends(get_current_user_optional),
     include_hidden: bool = False,
+    refresh_counts: bool = False,
+    stale_minutes: int = Query(30, ge=1, le=1440),
+    force_refresh: bool = False,
 ):
     """Get all preset scans."""
     ensure_preset_scans(db)
     scans = db.query(ScanModel).filter(ScanModel.is_preset == True).all()
-    if current_user:
-        preset_ids = [scan.id for scan in scans]
-        prefs = db.query(ScanPreference).filter(
-            ScanPreference.user_id == current_user.id,
-            ScanPreference.scan_id.in_(preset_ids),
-        ).all()
-        pref_map = {pref.scan_id: pref for pref in prefs}
-        scans = _apply_scan_preferences(scans, pref_map, include_hidden)
+    scans = _attach_scan_preferences(db, scans, current_user, include_hidden)
+    if refresh_counts:
+        _refresh_scan_match_counts(
+            db,
+            scans,
+            stale_minutes=stale_minutes,
+            force=force_refresh,
+        )
     return scans
 
 
@@ -251,6 +290,23 @@ async def create_scan(
     db.commit()
 
     return scan
+
+
+@router.post("/refresh-counts", response_model=List[Scan])
+async def refresh_scan_counts(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+    include_presets: bool = True,
+    include_hidden: bool = True,
+    stale_minutes: int = Query(30, ge=1, le=1440),
+    force: bool = False,
+):
+    """Refresh match counts and last_evaluated timestamps for visible scans."""
+    ensure_preset_scans(db)
+    scans = _build_scan_query(db, current_user, include_presets).all()
+    scans = _attach_scan_preferences(db, scans, current_user, include_hidden)
+    _refresh_scan_match_counts(db, scans, stale_minutes=stale_minutes, force=force)
+    return scans
 
 
 @router.get("/{scan_id}", response_model=Scan)

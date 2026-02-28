@@ -59,13 +59,16 @@ export type ScanRule = {
 
 export type Scan = {
   id: string;
+  user_id?: string | null;
   name: string;
   description: string;
+  position_filter?: string | null;
   is_preset: boolean;
   is_followed: boolean;
   is_hidden: boolean;
   alerts_enabled: boolean;
   match_count: number;
+  last_evaluated?: string | null;
   rules: ScanRule[];
 };
 

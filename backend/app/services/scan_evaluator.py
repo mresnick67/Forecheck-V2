@@ -504,3 +504,33 @@ class ScanEvaluatorService:
     def count_matches(db: Session, scan: Scan) -> int:
         """Count how many players match the scan."""
         return len(ScanEvaluatorService.evaluate(db, scan))
+
+    @staticmethod
+    def refresh_match_counts(
+        db: Session,
+        scans: List[Scan],
+        stale_minutes: int = 30,
+        force: bool = False,
+    ) -> int:
+        """
+        Refresh stored match_count/last_evaluated for a scan set.
+        Returns the number of scans recomputed.
+        """
+        now = datetime.utcnow()
+        updated = 0
+        for scan in scans:
+            last_evaluated = scan.last_evaluated
+            is_stale = (
+                last_evaluated is None
+                or (now - last_evaluated).total_seconds() > stale_minutes * 60
+            )
+            if not force and not is_stale:
+                continue
+
+            scan.match_count = len(ScanEvaluatorService.evaluate(db, scan))
+            scan.last_evaluated = now
+            updated += 1
+
+        if updated:
+            db.commit()
+        return updated

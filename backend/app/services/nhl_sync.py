@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models.player import Player, PlayerGameStats
+from app.models.scan import Scan
 from app.models.user import User
 from app.models.game import Game
 from app.models.sync_state import SyncState
@@ -27,6 +28,7 @@ from app.services.nhl_stats_api import (
     fetch_skater_season_summaries,
 )
 from app.services.nhl_roster_api import fetch_all_rosters
+from app.services.scan_evaluator import ScanEvaluatorService
 from app.services.season import current_season_id, season_id_for_date, current_game_type
 from app.services.yahoo_oauth_service import has_yahoo_credentials
 from app.services.yahoo_service import update_player_ownership
@@ -1744,6 +1746,24 @@ def _maybe_run_nightly_sync(db: Session, season_id: str) -> None:
             if "rolling_run" in locals():
                 _finish_sync_run(db, rolling_run, "failed", 0, error=str(exc)[:500])
             logger.error(f"Failed to update rolling stats: {exc}", exc_info=True)
+
+        # 2b. Refresh persisted scan counts so Discover/Scans stay populated.
+        try:
+            scan_refresh_run = _start_sync_run(db, "scan_counts")
+            scan_rows = db.query(Scan).all()
+            scan_count = ScanEvaluatorService.refresh_match_counts(
+                db,
+                scan_rows,
+                stale_minutes=30,
+                force=True,
+            )
+            _set_sync_state(db, "scan_counts", now)
+            _finish_sync_run(db, scan_refresh_run, "success", scan_count)
+            logger.info("Refreshed %s scan match counts", scan_count)
+        except Exception as exc:
+            if "scan_refresh_run" in locals():
+                _finish_sync_run(db, scan_refresh_run, "failed", 0, error=str(exc)[:500])
+            logger.error("Failed to refresh scan counts: %s", exc, exc_info=True)
 
         # 3. Update Yahoo ownership (if enabled and connected)
         if settings.yahoo_enabled:
