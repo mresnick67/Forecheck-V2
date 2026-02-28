@@ -49,6 +49,7 @@ Open:
 - `POST /auth/refresh`
 - `GET /auth/me`
 - `GET /players`, `GET /players/{id}`
+- `GET /players/explore` (window-aware advanced filters)
 - `GET/POST/PUT/DELETE /scans`
 - `GET/POST/PUT/DELETE /leagues`
 - `GET /schedule/week`

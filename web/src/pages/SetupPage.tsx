@@ -35,12 +35,14 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   }
 
   return (
-    <main className="layout">
-      <section className="card">
-        <h1>Forecheck v2 Setup</h1>
-        <p className="muted">
-          First-run setup creates the single local owner account.
-        </p>
+    <main className="app-shell boot-shell">
+      <header className="top-header">
+        <small className="eyebrow">Forecheck v2</small>
+        <h1>First Run Setup</h1>
+        <p className="muted">Create the local owner account.</p>
+      </header>
+      <section className="card ios-card">
+        <h2>Owner Bootstrap</h2>
 
         <form onSubmit={onSubmit}>
           <label>

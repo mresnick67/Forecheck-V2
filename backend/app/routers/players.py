@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import and_, asc, desc, func
 from typing import List, Optional
 from datetime import datetime
 
@@ -8,7 +8,7 @@ from app.database import get_db
 from app.models.player import Player as PlayerModel, PlayerRollingStats as RollingStatsModel, PlayerGameStats as GameStatsModel
 from app.models.team_week_schedule import TeamWeekSchedule
 from app.models.game import Game as GameModel
-from app.schemas.player import Player, PlayerWithStats, PlayerRollingStats, PlayerGameStats
+from app.schemas.player import ExplorePlayer, Player, PlayerWithStats, PlayerRollingStats, PlayerGameStats
 from app.schemas.game import Game
 from app.config import get_settings
 from app.services.analytics import AnalyticsService
@@ -79,6 +79,147 @@ async def get_players(
     players = query.offset(offset).limit(limit).all()
     weekly_map = _weekly_schedule_map(db)
     return [_player_payload(player, weekly_map) for player in players]
+
+
+@router.get("/explore", response_model=List[ExplorePlayer])
+async def explore_players(
+    db: Session = Depends(get_db),
+    window: str = Query("L10", description="Stat window: L5, L10, L20, Season"),
+    search: Optional[str] = None,
+    position: Optional[str] = Query(None, description="C, LW, RW, D, G"),
+    team: Optional[str] = None,
+    min_streamer_score: Optional[float] = Query(None, ge=0, le=100),
+    min_ownership: Optional[float] = Query(None, ge=0, le=100),
+    max_ownership: Optional[float] = Query(None, ge=0, le=100),
+    min_games_played: int = Query(1, ge=0, le=82),
+    min_weekly_games: int = Query(0, ge=0, le=7),
+    min_weekly_light_games: int = Query(0, ge=0, le=7),
+    sort_by: str = Query(
+        "window_streamer_score",
+        enum=[
+            "window_streamer_score",
+            "season_streamer_score",
+            "ownership",
+            "name",
+            "team",
+            "points",
+            "shots",
+            "hits",
+            "blocks",
+            "toi",
+            "save_pct",
+            "gaa",
+            "wins",
+            "games_played",
+            "weekly_games",
+            "weekly_light_games",
+        ],
+    ),
+    sort_order: str = Query("desc", enum=["asc", "desc"]),
+    limit: int = Query(120, ge=1, le=250),
+    offset: int = Query(0, ge=0),
+):
+    season_id = current_season_id()
+    game_type = current_game_type()
+    week_start, _ = current_week_bounds()
+
+    query = (
+        db.query(PlayerModel, RollingStatsModel, TeamWeekSchedule)
+        .join(
+            RollingStatsModel,
+            and_(
+                RollingStatsModel.player_id == PlayerModel.id,
+                RollingStatsModel.window == window,
+                RollingStatsModel.season_id == season_id,
+                RollingStatsModel.game_type == game_type,
+            ),
+        )
+        .outerjoin(
+            TeamWeekSchedule,
+            and_(
+                TeamWeekSchedule.team_abbrev == PlayerModel.team,
+                TeamWeekSchedule.season_id == season_id,
+                TeamWeekSchedule.week_start == week_start,
+            ),
+        )
+        .filter(
+            PlayerModel.is_active == True,
+            RollingStatsModel.games_played >= min_games_played,
+        )
+    )
+
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(
+            PlayerModel.name.ilike(search_term) | PlayerModel.team.ilike(search_term)
+        )
+    if position:
+        query = query.filter(PlayerModel.position == position)
+    if team:
+        query = query.filter(PlayerModel.team == team)
+    if min_streamer_score is not None:
+        query = query.filter(RollingStatsModel.streamer_score >= min_streamer_score)
+    if min_ownership is not None:
+        query = query.filter(PlayerModel.ownership_percentage >= min_ownership)
+    if max_ownership is not None:
+        query = query.filter(PlayerModel.ownership_percentage <= max_ownership)
+
+    weekly_games_expr = func.coalesce(TeamWeekSchedule.games_total, 0)
+    weekly_light_expr = func.coalesce(TeamWeekSchedule.light_games, 0)
+    if min_weekly_games > 0:
+        query = query.filter(weekly_games_expr >= min_weekly_games)
+    if min_weekly_light_games > 0:
+        query = query.filter(weekly_light_expr >= min_weekly_light_games)
+
+    sort_expr = {
+        "window_streamer_score": RollingStatsModel.streamer_score,
+        "season_streamer_score": PlayerModel.current_streamer_score,
+        "ownership": PlayerModel.ownership_percentage,
+        "name": PlayerModel.name,
+        "team": PlayerModel.team,
+        "points": RollingStatsModel.points_per_game,
+        "shots": RollingStatsModel.shots_per_game,
+        "hits": RollingStatsModel.hits_per_game,
+        "blocks": RollingStatsModel.blocks_per_game,
+        "toi": RollingStatsModel.time_on_ice_per_game,
+        "save_pct": RollingStatsModel.save_percentage,
+        "gaa": RollingStatsModel.goals_against_average,
+        "wins": RollingStatsModel.goalie_wins,
+        "games_played": RollingStatsModel.games_played,
+        "weekly_games": weekly_games_expr,
+        "weekly_light_games": weekly_light_expr,
+    }.get(sort_by, RollingStatsModel.streamer_score)
+
+    if sort_order == "asc":
+        query = query.order_by(asc(sort_expr), asc(PlayerModel.name))
+    else:
+        query = query.order_by(desc(sort_expr), asc(PlayerModel.name))
+
+    rows = query.offset(offset).limit(limit).all()
+    results: list[ExplorePlayer] = []
+    for player, rolling, schedule in rows:
+        payload = Player.model_validate(player).model_dump()
+        payload["weekly_games"] = schedule.games_total if schedule else 0
+        payload["weekly_light_games"] = schedule.light_games if schedule else 0
+        payload["weekly_heavy_games"] = schedule.heavy_games if schedule else 0
+        payload.update(
+            {
+                "window": rolling.window,
+                "window_streamer_score": rolling.streamer_score,
+                "games_played": rolling.games_played,
+                "goalie_games_started": rolling.goalie_games_started,
+                "points_per_game": rolling.points_per_game,
+                "shots_per_game": rolling.shots_per_game,
+                "hits_per_game": rolling.hits_per_game,
+                "blocks_per_game": rolling.blocks_per_game,
+                "time_on_ice_per_game": rolling.time_on_ice_per_game,
+                "save_percentage": rolling.save_percentage,
+                "goals_against_average": rolling.goals_against_average,
+                "goalie_wins": rolling.goalie_wins,
+            }
+        )
+        results.append(ExplorePlayer(**payload))
+    return results
 
 
 @router.get("/top-streamers", response_model=List[Player])

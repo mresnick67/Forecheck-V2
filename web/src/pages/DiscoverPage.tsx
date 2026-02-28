@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { CSSProperties, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { publicRequest } from "../api";
@@ -15,6 +15,22 @@ type WeeklySchedule = {
   days: Array<{ date: string; teams_playing: number; is_light: boolean }>;
 };
 
+function scoreColor(score: number): string {
+  if (score >= 75) return "#2be37d";
+  if (score >= 60) return "#2bb8f1";
+  if (score >= 45) return "#f6c344";
+  return "#ff6f86";
+}
+
+function initials(name: string): string {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
 export default function DiscoverPage() {
   const [topStreamers, setTopStreamers] = useState<Player[]>([]);
   const [hot, setHot] = useState<Player[]>([]);
@@ -26,8 +42,8 @@ export default function DiscoverPage() {
     async function load() {
       try {
         const [streamers, trend, week] = await Promise.all([
-          publicRequest<Player[]>("/players/top-streamers?limit=12"),
-          publicRequest<TrendResponse>("/players/trending?window=L5&limit=8"),
+          publicRequest<Player[]>("/players/top-streamers?limit=20"),
+          publicRequest<TrendResponse>("/players/trending?window=L5&limit=10"),
           publicRequest<WeeklySchedule>("/schedule/week"),
         ]);
         setTopStreamers(streamers);
@@ -43,26 +59,72 @@ export default function DiscoverPage() {
   }, []);
 
   return (
-    <div className="grid cols-2">
-      <section className="card">
-        <h2>Top Streamers</h2>
-        {topStreamers.length === 0 ? <p className="muted">No data yet.</p> : null}
-        <ul>
-          {topStreamers.map((player) => (
-            <li key={player.id}>
-              <Link to={`/players/${player.id}`}>{player.name}</Link> ({player.team} {player.position}) - score{" "}
-              {player.current_streamer_score.toFixed(1)}
-            </li>
-          ))}
-        </ul>
+    <div className="page-stack">
+      <section className="card ios-card">
+        <div className="list-head">
+          <h2>Top Streamers</h2>
+          <small className="muted">{topStreamers.length} players</small>
+        </div>
+        <div className="scroll-row">
+          {topStreamers.map((player) => {
+            const score = Math.max(0, Math.min(100, Math.round(player.current_streamer_score)));
+            const ringStyle: CSSProperties = {
+              background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
+            };
+            return (
+              <Link className="streamer-card" key={player.id} to={`/players/${player.id}`}>
+                <div className="avatar small">{initials(player.name)}</div>
+                <strong>{player.name}</strong>
+                <p className="muted compact">
+                  {player.team} <span className="badge-pos">{player.position}</span>
+                </p>
+                <div className="score-ring compact" style={ringStyle}>
+                  <span>{score}</span>
+                </div>
+              </Link>
+            );
+          })}
+        </div>
       </section>
 
-      <section className="card">
-        <h2>Weekly Schedule</h2>
+      <section className="card ios-card">
+        <div className="list-head">
+          <h3>Trending Up (L5)</h3>
+        </div>
+        <div className="mini-list">
+          {hot.map((player) => (
+            <Link key={player.id} to={`/players/${player.id}`} className="mini-row">
+              <span>{player.name}</span>
+              <small className="muted">
+                {player.team} {player.position}
+              </small>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="card ios-card">
+        <div className="list-head">
+          <h3>Trending Down (L5)</h3>
+        </div>
+        <div className="mini-list">
+          {cold.map((player) => (
+            <Link key={player.id} to={`/players/${player.id}`} className="mini-row">
+              <span>{player.name}</span>
+              <small className="muted">
+                {player.team} {player.position}
+              </small>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="card ios-card">
+        <h3>Weekly Schedule</h3>
         {!schedule ? <p className="muted">Loading schedule...</p> : null}
         {schedule ? (
           <>
-            <p className="muted">
+            <p className="muted compact">
               {schedule.week_start} to {schedule.week_end}
             </p>
             <table>
@@ -70,7 +132,7 @@ export default function DiscoverPage() {
                 <tr>
                   <th>Day</th>
                   <th>Teams</th>
-                  <th>Light Night</th>
+                  <th>Light</th>
                 </tr>
               </thead>
               <tbody>
@@ -85,28 +147,6 @@ export default function DiscoverPage() {
             </table>
           </>
         ) : null}
-      </section>
-
-      <section className="card">
-        <h2>Trending Up (L5)</h2>
-        <ul>
-          {hot.map((player) => (
-            <li key={player.id}>
-              <Link to={`/players/${player.id}`}>{player.name}</Link> ({player.team})
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="card">
-        <h2>Trending Down (L5)</h2>
-        <ul>
-          {cold.map((player) => (
-            <li key={player.id}>
-              <Link to={`/players/${player.id}`}>{player.name}</Link> ({player.team})
-            </li>
-          ))}
-        </ul>
       </section>
 
       {error ? <p className="error">{error}</p> : null}

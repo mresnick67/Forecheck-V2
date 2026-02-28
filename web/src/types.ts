@@ -30,6 +30,24 @@ export type Player = {
   ownership_percentage: number;
 };
 
+export type ExplorePlayer = Player & {
+  window: string;
+  window_streamer_score: number;
+  games_played: number;
+  goalie_games_started?: number | null;
+  points_per_game?: number | null;
+  shots_per_game?: number | null;
+  hits_per_game?: number | null;
+  blocks_per_game?: number | null;
+  time_on_ice_per_game?: number | null;
+  save_percentage?: number | null;
+  goals_against_average?: number | null;
+  goalie_wins?: number | null;
+  weekly_games?: number | null;
+  weekly_light_games?: number | null;
+  weekly_heavy_games?: number | null;
+};
+
 export type ScanRule = {
   id?: string;
   stat: string;

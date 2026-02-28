@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { CSSProperties, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { publicRequest } from "../api";
@@ -8,9 +8,14 @@ type RollingStats = {
   window: string;
   games_played: number;
   points_per_game: number;
+  assists_per_game: number;
+  goals_per_game: number;
   shots_per_game: number;
   hits_per_game: number;
   blocks_per_game: number;
+  power_play_points_per_game: number;
+  shorthanded_points_per_game: number;
+  time_on_ice_per_game: number;
   streamer_score: number;
 };
 
@@ -25,6 +30,11 @@ type GameLog = {
   blocks: number;
 };
 
+type PlayerDetail = Player & {
+  rolling_stats?: Record<string, RollingStats>;
+  recent_games?: GameLog[];
+};
+
 type Game = {
   id: string;
   date: string;
@@ -33,11 +43,22 @@ type Game = {
   status: string;
 };
 
+const WINDOWS = ["L5", "L10", "L20", "Season"] as const;
+
+function scoreColor(score: number): string {
+  if (score >= 75) return "#2be37d";
+  if (score >= 60) return "#2bb8f1";
+  if (score >= 45) return "#f6c344";
+  return "#ff6f86";
+}
+
+function n(value?: number | null, digits = 2): string {
+  return (value ?? 0).toFixed(digits);
+}
+
 export default function PlayerDetailPage() {
   const { playerId } = useParams();
-  const [player, setPlayer] = useState<Player | null>(null);
-  const [stats, setStats] = useState<RollingStats | null>(null);
-  const [games, setGames] = useState<GameLog[]>([]);
+  const [player, setPlayer] = useState<PlayerDetail | null>(null);
   const [schedule, setSchedule] = useState<Game[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,15 +67,11 @@ export default function PlayerDetailPage() {
 
     async function load() {
       try {
-        const [playerResponse, statsResponse, gamesResponse, scheduleResponse] = await Promise.all([
-          publicRequest<Player>(`/players/${playerId}`),
-          publicRequest<RollingStats>(`/players/${playerId}/stats/L10`),
-          publicRequest<GameLog[]>(`/players/${playerId}/games?limit=10`),
+        const [playerResponse, scheduleResponse] = await Promise.all([
+          publicRequest<PlayerDetail>(`/players/${playerId}`),
           publicRequest<Game[]>(`/players/${playerId}/schedule`),
         ]);
         setPlayer(playerResponse);
-        setStats(statsResponse);
-        setGames(gamesResponse);
         setSchedule(scheduleResponse);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load player details");
@@ -64,44 +81,121 @@ export default function PlayerDetailPage() {
     void load();
   }, [playerId]);
 
+  const primaryStats = useMemo(() => {
+    if (!player?.rolling_stats) return null;
+    return player.rolling_stats.L10 ?? player.rolling_stats.L5 ?? null;
+  }, [player]);
+
   if (!playerId) {
     return <p className="error">Missing player id.</p>;
   }
 
+  const score = Math.max(0, Math.min(100, Math.round(primaryStats?.streamer_score ?? player?.current_streamer_score ?? 0)));
+  const ringStyle: CSSProperties = {
+    background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
+  };
+
   return (
-    <div className="grid cols-2">
-      <section className="card">
-        <h2>{player ? player.name : "Loading player..."}</h2>
-        {player ? (
-          <>
-            <p>
-              {player.team} {player.position} {player.number ? `#${player.number}` : ""}
-            </p>
-            <p>
-              Streamer: {player.current_streamer_score.toFixed(1)} | Owned: {player.ownership_percentage.toFixed(1)}%
-            </p>
-          </>
-        ) : null}
+    <div className="page-stack">
+      <section className="card ios-card player-hero">
+        <div className="player-hero-main">
+          <h2>{player ? player.name : "Loading player..."}</h2>
+          {player ? (
+            <>
+              <p className="muted">
+                {player.team} {player.position} {player.number ? `#${player.number}` : ""}
+              </p>
+              <div className="badge-row">
+                <span className="badge">{(player.ownership_percentage ?? 0).toFixed(1)}% owned</span>
+                <span className="badge">{primaryStats?.games_played ?? 0} GP</span>
+                <span className="badge">L10</span>
+              </div>
+            </>
+          ) : null}
+        </div>
+        <div className="score-ring large" style={ringStyle}>
+          <span>{score}</span>
+        </div>
       </section>
 
-      <section className="card">
-        <h2>Rolling Stats (L10)</h2>
-        {stats ? (
-          <ul>
-            <li>Games: {stats.games_played}</li>
-            <li>Points / game: {stats.points_per_game.toFixed(2)}</li>
-            <li>Shots / game: {stats.shots_per_game.toFixed(2)}</li>
-            <li>Hits / game: {stats.hits_per_game.toFixed(2)}</li>
-            <li>Blocks / game: {stats.blocks_per_game.toFixed(2)}</li>
-            <li>Window score: {stats.streamer_score.toFixed(1)}</li>
-          </ul>
-        ) : (
-          <p className="muted">No rolling stats yet.</p>
-        )}
+      <section className="card ios-card">
+        <h3>Stat Comparison</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Stat</th>
+              {WINDOWS.map((window) => (
+                <th key={window}>{window}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{player?.rolling_stats?.[window]?.games_played ?? 0}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>P/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.points_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>A/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.assists_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>G/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.goals_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>S/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.shots_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>H/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.hits_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>B/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.blocks_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>PPP/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.power_play_points_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>SHP/GP</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.shorthanded_points_per_game)}</td>
+              ))}
+            </tr>
+            <tr>
+              <td>TOI</td>
+              {WINDOWS.map((window) => (
+                <td key={window}>{n(player?.rolling_stats?.[window]?.time_on_ice_per_game, 1)}</td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
       </section>
 
-      <section className="card">
-        <h2>Recent Games</h2>
+      <section className="card ios-card">
+        <h3>Recent Games</h3>
         <table>
           <thead>
             <tr>
@@ -113,7 +207,7 @@ export default function PlayerDetailPage() {
             </tr>
           </thead>
           <tbody>
-            {games.map((game) => (
+            {(player?.recent_games ?? []).map((game) => (
               <tr key={game.id}>
                 <td>{new Date(game.date).toLocaleDateString()}</td>
                 <td>{game.points}</td>
@@ -126,12 +220,12 @@ export default function PlayerDetailPage() {
         </table>
       </section>
 
-      <section className="card">
-        <h2>Upcoming Schedule</h2>
-        <ul>
+      <section className="card ios-card">
+        <h3>Upcoming Schedule</h3>
+        <ul className="simple-list">
           {schedule.map((game) => (
             <li key={game.id}>
-              {new Date(game.date).toLocaleDateString()} - {game.away_team} @ {game.home_team} ({game.status})
+              {new Date(game.date).toLocaleDateString()} • {game.away_team} @ {game.home_team} ({game.status})
             </li>
           ))}
         </ul>

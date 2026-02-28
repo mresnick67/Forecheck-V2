@@ -29,10 +29,14 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <main className="layout">
-      <section className="card">
-        <h1>Sign In</h1>
+    <main className="app-shell boot-shell">
+      <header className="top-header">
+        <small className="eyebrow">Forecheck v2</small>
+        <h1>Login</h1>
         <p className="muted">Single-owner local auth.</p>
+      </header>
+      <section className="card ios-card">
+        <h2>Sign In</h2>
 
         <form onSubmit={onSubmit}>
           <label>

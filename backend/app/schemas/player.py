@@ -63,6 +63,21 @@ class Player(PlayerBase):
         from_attributes = True
 
 
+class ExplorePlayer(Player):
+    window: str
+    window_streamer_score: float
+    games_played: int
+    goalie_games_started: Optional[int] = None
+    points_per_game: Optional[float] = None
+    shots_per_game: Optional[float] = None
+    hits_per_game: Optional[float] = None
+    blocks_per_game: Optional[float] = None
+    time_on_ice_per_game: Optional[float] = None
+    save_percentage: Optional[float] = None
+    goals_against_average: Optional[float] = None
+    goalie_wins: Optional[int] = None
+
+
 class PlayerGameStatsBase(BaseModel):
     team_abbrev: Optional[str] = None
     opponent_abbrev: Optional[str] = None
