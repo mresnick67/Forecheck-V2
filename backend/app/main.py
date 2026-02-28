@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import asyncio
 
 from app.database import engine, Base
+import app.models  # noqa: F401
 from app.routers import (
     auth_router,
     setup_router,
