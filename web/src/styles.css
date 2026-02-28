@@ -89,6 +89,10 @@ h3 {
   grid-template-columns: 1fr;
 }
 
+.discover-stack {
+  grid-template-columns: 1fr;
+}
+
 .grid {
   display: grid;
   gap: 12px;
@@ -135,6 +139,35 @@ h3 {
   border: 1px solid rgba(156, 181, 228, 0.18);
   border-radius: 14px;
   background: linear-gradient(160deg, rgba(13, 21, 35, 0.96), rgba(23, 32, 48, 0.92));
+}
+
+.discover-scan-section {
+  padding-top: 12px;
+}
+
+.discover-carousel {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(170px, 200px);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.discover-player-card {
+  display: grid;
+  gap: 6px;
+  min-height: 140px;
+  padding: 11px;
+  border: 1px solid rgba(151, 178, 223, 0.2);
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(11, 19, 32, 0.96), rgba(20, 29, 46, 0.9));
+}
+
+.discover-player-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .mini-list {
@@ -491,6 +524,14 @@ small,
 @media (min-width: 900px) {
   .page-stack {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .discover-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .discover-stack > * {
+    grid-column: 1 / -1;
   }
 
   .page-stack > :first-child,
