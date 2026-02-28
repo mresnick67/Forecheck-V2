@@ -27,6 +27,11 @@ Open:
 - App: http://localhost:6767
 - API docs: http://localhost:6767/api/docs
 
+Install as PWA (optional):
+
+- Chrome/Edge desktop: open `http://localhost:6767`, then use browser install action.
+- iOS Safari: Share -> Add to Home Screen.
+
 ## First run
 
 1. Open `http://localhost:6767`.
@@ -51,6 +56,7 @@ Open:
 - `GET /players`, `GET /players/{id}`
 - `GET /players/explore` (window-aware advanced filters)
 - `GET/POST/PUT/DELETE /scans`
+- `POST /scans/refresh-counts`
 - `GET/POST/PUT/DELETE /leagues`
 - `GET /schedule/week`
 - `POST /admin/sync/pipeline`

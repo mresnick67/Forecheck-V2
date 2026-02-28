@@ -59,3 +59,9 @@ Use the root Compose stack from repo root:
 ```bash
 docker compose up -d --build
 ```
+
+## Useful admin ops
+
+- `POST /admin/sync/pipeline`
+- `POST /admin/sync/game-logs/full`
+- `POST /scans/refresh-counts`
