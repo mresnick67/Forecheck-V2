@@ -1,0 +1,219 @@
+Using nhl-api-py for season summaries and game‑by‑game logs
+Package overview and installation
+
+The nhl-api-py
+ package is a wrapper around the NHL statistical APIs. Installation from PyPI (pip install nhl-api-py) provides a module called nhlpy containing an NHLClient class. A client can be created with optional settings like debug logging, request time‑outs and SSL verification:
+
+from nhlpy import NHLClient
+
+# default configuration
+client = NHLClient()
+
+# enable debug logging
+client = NHLClient(debug=True, timeout=30, ssl_verify=True, follow_redirects=True)
+
+
+The API surface is organised into submodules: teams, schedule, stats, edge, standings, game_center, misc and players. For obtaining season and game‑by‑game summaries the stats and game_center modules are particularly relevant.
+
+Retrieving season summaries
+Basic skater and goalie statistics
+
+nhl-api-py provides high‑level functions for basic season summaries for skaters and goalies. To get skater summaries for one or more seasons, call client.stats.skater_stats_summary(start_season, end_season, **filters):
+
+from nhlpy import NHLClient
+client = NHLClient()
+
+# get regular‑season skater summaries for the 2023–24 season
+stats = client.stats.skater_stats_summary(
+    start_season="20232024", end_season="20232024"
+)
+
+# filter by franchise; 10 is Toronto Maple Leafs
+leaf_stats = client.stats.skater_stats_summary(
+    start_season="20232024", end_season="20232024", franchise_id="10"
+)
+
+
+The documentation’s example shows this call. The returned object is a list of dictionaries (one per skater) containing aggregated season statistics such as games played, goals, assists, points, power‑play goals, shorthanded goals, plus/minus, penalty minutes and time‑on‑ice. Each dictionary also contains identification fields (e.g., playerId, skaterFullName, position) that can be used as primary keys in a database.
+
+A similar function, client.stats.goalie_stats_summary(start_season, end_season, stats_type='basic'|'advanced'), returns aggregated goalie statistics. For team‑level summaries, use client.stats.team_summary(start_season, end_season).
+
+Aggregated vs per‑season results
+
+The advanced QueryBuilder
+ is provided for more flexible queries. Query filters such as SeasonQuery(season_start=…, season_end=…), GameTypeQuery(game_type="2") (regular season) and PositionQuery(position=PositionTypes.ALL_FORWARDS) can be passed to a QueryBuilder to construct a QueryContext. When calling client.stats.skater_stats_with_query_context(report_type, query_context, aggregate=True|False), the aggregate flag controls whether the returned stats are combined across seasons or broken down by season. Setting aggregate=True produces a single record per player summarising all seasons, whereas aggregate=False yields one record per season per player.
+
+The QueryBuilder also supports explicit fact filters using factCayenneExp (exposed via query_context.fact_query) to enforce conditions like goals>=10 and shots>=1.
+
+Obtaining game‑by‑game logs
+player_game_log endpoint
+
+The stats module exposes a player_game_log function for retrieving per‑game summaries. The documentation shows how to call it:
+
+# get game‑by‑game stats for Connor McDavid during the 2023–24 regular season
+game_log = client.stats.player_game_log(
+    player_id="8478402",   # Connor McDavid
+    season_id="20232024",  # season in YYYYYYYY format
+    game_type=2             # 2 = regular season, 3 = playoffs
+)
+
+
+Internally this call requests https://api-web.nhle.com/v1/player/{player}/game-log/{season}/{game-type} . The JSON response contains two top‑level keys:
+
+playerStatsSeasons – lists the seasons for which game‑log data is available for the player and the game types (2 = regular season, 3 = playoffs).
+
+gameLog – an array of dictionaries, one per game. Each dictionary contains the following per‑game fields (as observed from the live API):
+
+gameId – unique identifier of the game (YYMMDD plus incremental number).
+
+teamAbbrev / commonName – the player’s team abbreviation and name.
+
+opponentAbbrev / opponentCommonName – opponent abbreviation and name.
+
+homeRoadFlag – 'H' or 'R' indicating whether the player’s team was home or away.
+
+gameDate – date of the game (YYYY‑MM‑DD).
+
+goals, assists, points – counting stats for the game.
+
+plusMinus – ± rating for the game.
+
+powerPlayGoals, powerPlayPoints, gameWinningGoals, otGoals – situational scoring metrics.
+
+shorthandedGoals, shorthandedPoints – shorthanded scoring metrics.
+
+shots – total shots on goal.
+
+shifts – number of shifts taken.
+
+pim – penalty minutes.
+
+toi – time on ice as a string mm:ss (can be parsed into seconds).
+
+Sample entries returned by the API confirm this structure. No advanced metrics such as shot attempts, expected goals or zone‑starts are provided in the game log; for those metrics you would need to use the game_center endpoints described below.
+
+Processing the game log
+
+Because player_game_log returns a Python dict with a gameLog list, it can be converted directly into a pandas DataFrame or stored in a database table. Here is a complete example that retrieves a player’s game log and converts it to a DataFrame:
+
+import pandas as pd
+from nhlpy import NHLClient
+
+client = NHLClient()
+log = client.stats.player_game_log(player_id="8478402", season_id="20232024", game_type=2)
+
+game_log_df = pd.DataFrame(log['gameLog'])
+# convert time‑on‑ice (mm:ss) to seconds for numeric analysis
+minutes, seconds = zip(*(t.split(':') for t in game_log_df['toi']))
+game_log_df['time_on_ice_s'] = [int(m)*60 + int(s) for m, s in zip(minutes, seconds)]
+
+Fetching logs for all players
+
+To build a local database of every player’s game log for a season you must first obtain a list of player IDs. There are several ways to do this:
+
+Team rosters: call client.teams.team_roster(team_abbr, season) for each of the 32 franchises. The returned roster includes player IDs, positions and jersey numbers, which can be used to call player_game_log.
+
+Season summaries: call client.stats.skater_stats_summary(start_season, end_season) and client.stats.goalie_stats_summary(start_season, end_season) to get a list of players who played in the season. Each entry contains a playerId you can use.
+
+Once you have the list of player IDs you can loop through them and request each player’s game log. The API does not support a bulk game‑log endpoint, so you must make one request per player per season. To avoid overwhelming the NHL servers, the package’s helper functions include built‑in sleep delays. When writing your own loop, respect rate limits by inserting a time.sleep() between requests or by using asynchronous concurrency with throttling.
+
+import time
+from nhlpy import NHLClient
+
+client = NHLClient()
+player_ids = [player['playerId'] for player in client.stats.skater_stats_summary(
+    start_season="20232024", end_season="20232024")]
+
+all_logs = []
+for pid in player_ids:
+    try:
+        log = client.stats.player_game_log(player_id=str(pid), season_id="20232024", game_type=2)
+        all_logs.extend(log['gameLog'])
+    except Exception as e:
+        print(f"Error fetching log for player {pid}: {e}")
+    time.sleep(0.3)  # adjust delay to stay within rate limits
+
+
+This dataset can then be normalised into a relational database or loaded into pandas for analysis.
+
+Game‑center endpoints for deeper per‑game data
+
+The game_center module exposes endpoints for detailed game information beyond the simple game log:
+
+client.game_center.boxscore(game_id) – returns full box score including scoring by period, shot totals, face‑offs, power plays, goalie save details and roster usage.
+
+client.game_center.play_by_play(game_id) – returns an array of events (shots, goals, penalties, face‑offs, hits, blocks, stoppages) with timestamps and players involved; useful for constructing advanced metrics.
+
+client.game_center.shift_chart_data(game_id) – returns shift start/end times for all players.
+
+client.game_center.season_series_matchup(game_id) – returns context about teams’ previous meetings.
+
+client.game_center.game_story(game_id) – returns a narrative recap (headlines, highlights, star players).
+
+These endpoints require a game ID (e.g., 2023020280) which can be obtained from the schedule API or from the game log itself. The game‑center responses are nested JSON structures; for play‑by‑play you will need to flatten event lists into a tabular format.
+
+Fantasy hockey stats: hits, blocked shots and face‑offs
+
+Many fantasy‑hockey scoring systems award points for so‑called “peripheral” stats (hits, blocked shots, faceoff wins, giveaways/takeaways) in addition to goals and assists. The basic player_game_log endpoint does not include these metrics, but the NHL API exposes them through the GameCenter endpoints and the stats report types available via the QueryBuilder.
+
+Per‑game hits, blocks and giveaways from GameCenter
+
+When you call client.game_center.boxscore(game_id) the response includes a playerByGameStats section with separate lists for forwards, defensemen and goalies. Each player dictionary includes additional fields beyond the basic game log. For example, when requesting the box score for game 2023020280 (Chicago vs Columbus), the per‑player objects contain hits, blockedShots, giveaways, takeaways and faceoffWinningPctg alongside goals, assists and shots. Defenseman entries also include these fields. By iterating over these lists you can extract hits and blocks for each player:
+
+box = client.game_center.boxscore("2023020280")
+
+# extract hits and blocked shots for all away team skaters
+away_stats = []
+for position_group in ["forwards", "defense", "goalies"]:
+    for player in box["playerByGameStats"]["awayTeam"][position_group]:
+        away_stats.append({
+            "playerId": player["playerId"],
+            "name": player["name"]["default"],
+            "hits": player.get("hits", 0),
+            "blocks": player.get("blockedShots", 0),
+            "giveaways": player.get("giveaways", 0),
+            "takeaways": player.get("takeaways", 0),
+            "faceoffPct": player.get("faceoffWinningPctg")
+        })
+
+
+At the team level, the right‑rail endpoint summarises these same categories. The teamGameStats array returned by client.game_center.season_series_matchup(game_id) lists categories such as faceoffWins, hits, blockedShots, giveaways and takeaways with separate values for the away and home teams. If you need team totals for fantasy scoring, parse this array instead of iterating through individual players.
+
+Seasonal aggregates using stats report types
+
+For season‑level or multi‑game aggregates you can use the QueryBuilder with report types that include peripheral stats. The package documentation lists faceoffpercentages, faceoffwins, realtime, puckPossessions, summaryshooting, percentages, scoringRates, scoringpergame, and timeonice among the supported report types. These correspond to underlying NHL endpoints such as .../stats/rest/en/skater/scoringpergame and .../stats/rest/en/skater/realtime, which return data on shots, hits, blocks, giveaways and faceoffs. For example, the R‑language example in the 18 Skaters blog constructs a URL like:
+
+https://api.nhle.com/stats/rest/en/skater/scoringpergame?
+    isAggregate=true&isGame=false&sort=[{...}]&start=0&limit=-1&
+    cayenneExp=gameTypeId=2 and seasonId<={end} and seasonId>={start}
+
+
+and selects the fields shots, hits and blockedShots from the returned JSON. While nhl-api-py does not currently expose a dedicated wrapper for these report types, you can call them using client.stats.skater_stats_with_query_context(report_type='realtime', ...) or report_type='scoringpergame' and set the appropriate cayenneExp to filter by season, game type or player. The faceoffwins report returns counts of faceoff wins and attempts, while faceoffpercentages returns win percentages.
+
+In summary, although the basic game log lacks peripheral statistics, nhl-api-py can retrieve hits, blocks and faceoff wins through the GameCenter endpoints and advanced stats report types. These functions allow you to build fantasy‑hockey features such as category‑based scoring, track physical play (hits), defensive contributions (blocks) and possession control (faceoff wins).
+
+Can nhl-api-py support a game‑log database and analytics application?
+
+Yes. nhl-api-py offers endpoints to retrieve season summaries and per‑game logs, making it suitable as a data ingestion layer for an analytics application:
+
+Use season summary functions (skater_stats_summary, goalie_stats_summary, team_summary) to get aggregated statistics and to discover which players to pull game logs for.
+
+Use player_game_log to retrieve per‑game stats for each player; the response includes key metrics needed for per‑game analysis. Note that the game log contains standard box‑score categories but does not include advanced analytics such as shot attempts, expected goals, zone‑starts or shift times.
+
+For richer per‑game data, call the game‑center endpoints to fetch play‑by‑play events and shift charts.
+
+By storing the season summaries and game logs in a relational or time‑series database, you can compute season‑long aggregates, rolling averages, opponent‑adjusted metrics or custom analytics. The library’s QueryBuilder can simplify building season‑level aggregates with filters such as game type, draft round, position and fact expressions, but game‑log retrieval must still be done player by player using player_game_log.
+
+Limitations and considerations
+
+Rate‑limiting – The NHL API is undocumented and does not publish rate limits, but too many rapid requests can result in HTTP 429 errors. Throttle requests when pulling game logs for all players.
+
+Unstable endpoints – The API is not officially supported; endpoints and fields may change over time. The package is updated regularly (latest release October 31 2025) but breaking changes are possible.
+
+Data completeness – The game log returns basic counting statistics only. For analytic models that rely on advanced events (shot location, expected goals, shift length, etc.), you must pull and parse play‑by‑play and shift‑chart data.
+
+Historical coverage – player_game_log requires season identifiers in the YYYYYYYY format and only returns seasons present in playerStatsSeasons. For players without logs in older seasons (e.g., pre‑2010), additional data sources may be needed.
+
+Summary
+
+nhl-api-py wraps most of the NHL’s statistics API. For season summaries you can use high‑level functions like skater_stats_summary and goalie_stats_summary to obtain aggregated data over a range of seasons, optionally filtering by team, draft or position. For detailed per‑game stats, call player_game_log(player_id, season_id, game_type) which internally uses the /v1/player/{player}/game-log/{season}/{game-type} endpoint and returns a gameLog array with fields such as game ID, date, goals, assists, points, plus/minus, shots, shifts, penalty minutes and time‑on‑ice. You can build a comprehensive game‑log database by enumerating player IDs from team rosters or season summaries and iterating through seasons.

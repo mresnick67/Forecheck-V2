@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: forecheck
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/forecheck
+      SECRET_KEY: change-me
+      ENVIRONMENT: development
+      APP_MODE: single_owner
+      ENABLE_REGISTRATION: "false"
+      PUBLIC_BASE_URL: http://localhost:6767
+      API_CORS_ORIGINS: http://localhost:6767
+      NHL_SYNC_ENABLED: "true"
+      RUN_SYNC_LOOP: "false"
+      YAHOO_ENABLED: "false"
+      ADMIN_API_KEY: change-me-admin-key
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/forecheck
+      SECRET_KEY: change-me
+      ENVIRONMENT: development
+      APP_MODE: single_owner
+      ENABLE_REGISTRATION: "false"
+      PUBLIC_BASE_URL: http://localhost:6767
+      API_CORS_ORIGINS: http://localhost:6767
+      NHL_SYNC_ENABLED: "true"
+      RUN_SYNC_LOOP: "true"
+      YAHOO_ENABLED: "false"
+      ADMIN_API_KEY: change-me-admin-key
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./web
+    ports:
+      - "6767:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:

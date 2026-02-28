@@ -1,0 +1,143 @@
+:root {
+  color-scheme: dark;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  --bg: #0f141d;
+  --bg-soft: #182030;
+  --card: #202b3d;
+  --text: #e9eef9;
+  --muted: #9cb0d1;
+  --accent: #5bc0eb;
+  --danger: #ff6b6b;
+  --ok: #7bd389;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 800px at 90% -10%, #27406d, transparent 50%),
+    radial-gradient(900px 700px at -20% 110%, #1e3a58, transparent 55%),
+    var(--bg);
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.layout {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.nav {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.nav a {
+  padding: 8px 12px;
+  background: var(--bg-soft);
+  border-radius: 999px;
+  border: 1px solid #2e3c56;
+}
+
+.card {
+  background: linear-gradient(180deg, #233047, #1b2638);
+  border: 1px solid #31435f;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.grid {
+  display: grid;
+  gap: 12px;
+}
+
+.grid.cols-2 {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+h1,
+h2,
+h3 {
+  margin-top: 0;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid #3a4d6f;
+  background: #121a28;
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid #3c506f;
+  border-radius: 8px;
+  background: #29405f;
+  color: var(--text);
+  padding: 8px 12px;
+}
+
+button.primary {
+  background: #2274a5;
+  border-color: #3b95cb;
+}
+
+button.danger {
+  background: #5b2230;
+  border-color: #a3455f;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 8px;
+  border-bottom: 1px solid #2d3c55;
+  text-align: left;
+}
+
+small,
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: #ff9da3;
+}
+
+.success {
+  color: var(--ok);
+}

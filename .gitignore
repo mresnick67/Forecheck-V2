@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+
+# Env
+.env
+*.env.local
+
+# Node
+node_modules/
+web/dist/
+
+# Misc
+.pytest_cache/
+coverage/
+
+# OAuth token cache
+oauth2.json
+backend/oauth2.json
