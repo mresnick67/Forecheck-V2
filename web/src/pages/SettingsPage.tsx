@@ -116,6 +116,13 @@ function labelize(value: string): string {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function weightBudgetClass(total: number): string {
+  if (total > 120) return "weight-budget over";
+  if (total < 80) return "weight-budget under";
+  if (Math.abs(total - 100) <= 10) return "weight-budget target";
+  return "weight-budget";
+}
+
 const STREAMER_SCORE_HELP: Record<string, string> = {
   "league_influence.enabled":
     "When enabled, streamer score blends your base model with league-fit scoring from the active league profile.",
@@ -526,6 +533,45 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       ? Math.min(100, Math.round((recalcProgress.processed_players / recalcProgress.total_players) * 100))
       : 0;
 
+  const skaterWeightSum = scoreDraft
+    ? Object.values(scoreDraft.skater.weights).reduce((acc, value) => acc + Number(value || 0), 0)
+    : 0;
+  const goalieWeightSum = scoreDraft
+    ? Object.values(scoreDraft.goalie.weights).reduce((acc, value) => acc + Number(value || 0), 0)
+    : 0;
+
+  const skaterCoreMax = scoreDraft
+    ? (scoreDraft.skater.weights.points_per_game || 0) +
+      (scoreDraft.skater.weights.shots_per_game || 0) +
+      (scoreDraft.skater.weights.power_play_points_per_game || 0) +
+      (scoreDraft.skater.weights.time_on_ice_per_game || 0) +
+      (scoreDraft.skater.toggles.use_plus_minus ? scoreDraft.skater.weights.plus_minus_per_game || 0 : 0) +
+      (scoreDraft.skater.toggles.use_hits_blocks ? scoreDraft.skater.weights.hits_blocks_per_game || 0 : 0) +
+      (scoreDraft.skater.toggles.use_availability_bonus ? scoreDraft.skater.weights.availability_bonus || 0 : 0)
+    : 0;
+  const skaterHotMax = scoreDraft
+    ? skaterCoreMax + (scoreDraft.skater.toggles.use_trend_bonus ? scoreDraft.skater.weights.trend_hot_bonus || 0 : 0)
+    : 0;
+  const skaterStableMax = scoreDraft
+    ? skaterCoreMax +
+      (scoreDraft.skater.toggles.use_trend_bonus ? scoreDraft.skater.weights.trend_stable_bonus || 0 : 0)
+    : 0;
+
+  const goalieCoreMax = scoreDraft
+    ? (scoreDraft.goalie.weights.save_percentage || 0) +
+      (scoreDraft.goalie.weights.goals_against_average || 0) +
+      (scoreDraft.goalie.weights.wins || 0) +
+      (scoreDraft.goalie.weights.starts || 0) +
+      (scoreDraft.goalie.toggles.use_availability_bonus ? scoreDraft.goalie.weights.availability_bonus || 0 : 0)
+    : 0;
+  const goalieHotMax = scoreDraft
+    ? goalieCoreMax + (scoreDraft.goalie.toggles.use_trend_bonus ? scoreDraft.goalie.weights.trend_hot_bonus || 0 : 0)
+    : 0;
+  const goalieStableMax = scoreDraft
+    ? goalieCoreMax +
+      (scoreDraft.goalie.toggles.use_trend_bonus ? scoreDraft.goalie.weights.trend_stable_bonus || 0 : 0)
+    : 0;
+
   return (
     <div className="page-stack settings-stack">
       <section className="card ios-card">
@@ -688,6 +734,15 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
 
             <article className="score-config-card">
               <h3>Skater Weights</h3>
+              <p className="muted compact">
+                Weights do not need to equal exactly 100. Treat 100 as a budget guideline to reduce frequent score
+                clipping at the 0-100 cap.
+              </p>
+              <div className="weight-budget-row">
+                <span className={weightBudgetClass(skaterWeightSum)}>All Skater Weights: {skaterWeightSum.toFixed(1)}</span>
+                <span className={weightBudgetClass(skaterHotMax)}>Active Hot Max: {skaterHotMax.toFixed(1)}</span>
+                <span className={weightBudgetClass(skaterStableMax)}>Active Stable Max: {skaterStableMax.toFixed(1)}</span>
+              </div>
               <div className="score-config-fields">
                 {Object.entries(scoreDraft.skater.weights).map(([key, value]) => (
                   <label key={`skater-weight-${key}`}>
@@ -788,6 +843,14 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
 
             <article className="score-config-card">
               <h3>Goalie Weights</h3>
+              <p className="muted compact">
+                Same model rule: not required to total 100, but the active maximum budget is useful for calibration.
+              </p>
+              <div className="weight-budget-row">
+                <span className={weightBudgetClass(goalieWeightSum)}>All Goalie Weights: {goalieWeightSum.toFixed(1)}</span>
+                <span className={weightBudgetClass(goalieHotMax)}>Active Hot Max: {goalieHotMax.toFixed(1)}</span>
+                <span className={weightBudgetClass(goalieStableMax)}>Active Stable Max: {goalieStableMax.toFixed(1)}</span>
+              </div>
               <div className="score-config-fields">
                 {Object.entries(scoreDraft.goalie.weights).map(([key, value]) => (
                   <label key={`goalie-weight-${key}`}>

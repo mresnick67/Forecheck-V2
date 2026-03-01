@@ -203,3 +203,35 @@ class PlayerSignals(BaseModel):
     trend_direction: Optional[str] = None
     temperature_tag: Optional[str] = None
     preset_matches: List[PlayerSignalScan] = Field(default_factory=list)
+
+
+class StreamerScoreComponent(BaseModel):
+    key: str
+    label: str
+    enabled: bool
+    metric_value: Optional[float] = None
+    cap: Optional[float] = None
+    weight: Optional[float] = None
+    normalized_value: Optional[float] = None
+    raw_contribution: float
+    base_contribution: float
+    final_contribution: float
+    notes: Optional[str] = None
+
+
+class StreamerScoreBreakdown(BaseModel):
+    player_id: str
+    window: str
+    position: str
+    trend_direction: Optional[str] = None
+    games_played: int
+    base_score_before_cap: float
+    base_score: float
+    base_cap_factor: float
+    score_before_sample_penalty: Optional[float] = None
+    sample_factor: Optional[float] = None
+    league_fit_score: Optional[float] = None
+    league_blend_weight: float
+    league_component_contribution: float
+    final_score: float
+    components: List[StreamerScoreComponent] = Field(default_factory=list)

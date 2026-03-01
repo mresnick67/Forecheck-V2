@@ -17,6 +17,7 @@ from app.schemas.player import (
     PlayerGameStats,
     PlayerSignals,
     PlayerSignalScan,
+    StreamerScoreBreakdown,
 )
 from app.schemas.game import Game
 from app.config import get_settings
@@ -24,6 +25,7 @@ from app.services.analytics import AnalyticsService
 from app.services.nhl_sync import sync_player_game_log, needs_game_log_sync
 from app.services.scan_evaluator import ScanEvaluatorService
 from app.services.season import current_season_id, current_game_type
+from app.services.streamer_score_config import get_streamer_score_config
 from app.services.week_schedule import current_week_bounds
 
 router = APIRouter(prefix="/players", tags=["Players"])
@@ -449,6 +451,49 @@ async def get_player(
         rolling_stats=rolling_stats_dict,
         recent_games=[PlayerGameStats.model_validate(g) for g in recent_games],
     )
+
+
+@router.get("/{player_id}/score-breakdown", response_model=StreamerScoreBreakdown)
+async def get_player_score_breakdown(
+    player_id: str,
+    db: Session = Depends(get_db),
+    window: str = Query("L10", description="Stat window: L5, L10, L20, Season"),
+):
+    """Get exact streamer score contribution breakdown for a player/window."""
+    player = db.query(PlayerModel).filter(PlayerModel.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    season_id = current_season_id()
+    game_type = current_game_type()
+    score_config = get_streamer_score_config(db)
+    league_context = AnalyticsService._active_league_context(db)
+
+    rolling = db.query(RollingStatsModel).filter(
+        RollingStatsModel.player_id == player_id,
+        RollingStatsModel.window == window,
+        RollingStatsModel.season_id == season_id,
+        RollingStatsModel.game_type == game_type,
+    ).first()
+
+    if not rolling:
+        rolling = AnalyticsService.compute_rolling_stats(
+            db,
+            player,
+            window=window,
+            season_id=season_id,
+            game_type=game_type,
+            score_config=score_config,
+            league_context=league_context,
+        )
+
+    breakdown = AnalyticsService.explain_streamer_score(
+        player=player,
+        rolling_stats=rolling,
+        score_config=score_config,
+        league_context=league_context,
+    )
+    return StreamerScoreBreakdown(**breakdown)
 
 
 @router.get("/{player_id}/signals", response_model=PlayerSignals)

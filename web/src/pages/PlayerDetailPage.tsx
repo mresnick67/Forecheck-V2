@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 
 import { publicRequest } from "../api";
 import { PlayerAvatar, TeamLogo, hexToRgba, teamTheme } from "../components/NhlAssets";
-import type { Player } from "../types";
+import type { Player, StreamerScoreBreakdown, StreamerScoreComponent } from "../types";
 
 type RollingStats = {
   window: string;
@@ -62,13 +62,6 @@ type PlayerSignals = {
   preset_matches: Array<{ id: string; name: string }>;
 };
 
-type ScoreDriver = {
-  label: string;
-  currentLabel: string;
-  baselineLabel: string;
-  impactPercent: number;
-};
-
 const WINDOWS = ["L5", "L10", "L20", "Season"] as const;
 
 function scoreColor(score: number): string {
@@ -86,9 +79,25 @@ function formatDate(value: string): string {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-function formatSignedPercent(value: number): string {
-  const rounded = Math.round(Math.abs(value));
-  return `${value >= 0 ? "+" : "-"}${rounded}%`;
+function formatSigned(value: number, digits = 1): string {
+  return `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(digits)}`;
+}
+
+function componentFormula(component: StreamerScoreComponent): string {
+  const parts: string[] = [];
+  if (component.metric_value !== undefined && component.metric_value !== null) {
+    parts.push(`metric ${component.metric_value.toFixed(2)}`);
+  }
+  if (component.cap !== undefined && component.cap !== null) {
+    parts.push(`cap ${component.cap.toFixed(2)}`);
+  }
+  if (component.weight !== undefined && component.weight !== null) {
+    parts.push(`weight ${component.weight.toFixed(2)}`);
+  }
+  if (component.normalized_value !== undefined && component.normalized_value !== null) {
+    parts.push(`norm ${component.normalized_value.toFixed(2)}`);
+  }
+  return parts.join(" • ");
 }
 
 function scheduleOpponent(game: Game, playerTeam?: string): { opponent: string; venue: "@" | "vs" } {
@@ -105,6 +114,7 @@ export default function PlayerDetailPage() {
   const [player, setPlayer] = useState<PlayerDetail | null>(null);
   const [schedule, setSchedule] = useState<Game[]>([]);
   const [signals, setSignals] = useState<PlayerSignals>({ preset_matches: [] });
+  const [scoreBreakdown, setScoreBreakdown] = useState<StreamerScoreBreakdown | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isGoalie = player?.position === "G";
 
@@ -113,10 +123,11 @@ export default function PlayerDetailPage() {
 
     async function load() {
       try {
-        const [playerResult, scheduleResult, signalResult] = await Promise.allSettled([
+        const [playerResult, scheduleResult, signalResult, breakdownResult] = await Promise.allSettled([
           publicRequest<PlayerDetail>(`/players/${playerId}`),
           publicRequest<Game[]>(`/players/${playerId}/schedule`),
           publicRequest<PlayerSignals>(`/players/${playerId}/signals`),
+          publicRequest<StreamerScoreBreakdown>(`/players/${playerId}/score-breakdown?window=L10`),
         ]);
 
         if (playerResult.status !== "fulfilled" || scheduleResult.status !== "fulfilled") {
@@ -129,6 +140,12 @@ export default function PlayerDetailPage() {
           setSignals(signalResult.value);
         } else {
           setSignals({ preset_matches: [] });
+        }
+
+        if (breakdownResult.status === "fulfilled") {
+          setScoreBreakdown(breakdownResult.value);
+        } else {
+          setScoreBreakdown(null);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load player details");
@@ -153,136 +170,23 @@ export default function PlayerDetailPage() {
 
   const recentGames = useMemo(() => (player?.recent_games ?? []).slice(0, 5), [player?.recent_games]);
   const upcomingGames = useMemo(() => schedule.slice(0, 5), [schedule]);
-  const scoreExplainer = useMemo(() => {
-    if (!player?.rolling_stats) {
-      return {
-        trendSummary: "No rolling windows are available yet. Run a sync to populate scoring context.",
-        drivers: [] as ScoreDriver[],
-      };
-    }
-
-    const current = player.rolling_stats.L10 ?? player.rolling_stats.L5 ?? player.rolling_stats.Season;
-    const baseline = player.rolling_stats.Season ?? current;
-    if (!current || !baseline) {
-      return {
-        trendSummary: "No rolling windows are available yet. Run a sync to populate scoring context.",
-        drivers: [] as ScoreDriver[],
-      };
-    }
-
-    const trendSummary =
-      signals.trend_direction === "hot"
-        ? "Trend model is currently adding an upward boost."
-        : signals.trend_direction === "cold"
-          ? "Trend model is currently applying a cooling penalty."
-          : "Trend model is neutral right now.";
-
-    const metrics = isGoalie
-      ? [
-          {
-            label: "Save Percentage",
-            current: current.save_percentage ?? 0,
-            baseline: baseline.save_percentage ?? 0,
-            digits: 3,
-            floor: 0.05,
-            higherIsBetter: true,
-          },
-          {
-            label: "Goals Against Avg",
-            current: current.goals_against_average ?? 0,
-            baseline: baseline.goals_against_average ?? 0,
-            digits: 2,
-            floor: 0.5,
-            higherIsBetter: false,
-          },
-          {
-            label: "Wins",
-            current: current.goalie_wins ?? 0,
-            baseline: baseline.goalie_wins ?? 0,
-            digits: 1,
-            floor: 0.5,
-            higherIsBetter: true,
-          },
-          {
-            label: "Starts",
-            current: current.goalie_games_started ?? 0,
-            baseline: baseline.goalie_games_started ?? 0,
-            digits: 1,
-            floor: 1,
-            higherIsBetter: true,
-          },
-        ]
-      : [
-          {
-            label: "Points / GP",
-            current: current.points_per_game,
-            baseline: baseline.points_per_game,
-            digits: 2,
-            floor: 0.2,
-            higherIsBetter: true,
-          },
-          {
-            label: "Shots / GP",
-            current: current.shots_per_game,
-            baseline: baseline.shots_per_game,
-            digits: 2,
-            floor: 1,
-            higherIsBetter: true,
-          },
-          {
-            label: "PPP / GP",
-            current: current.power_play_points_per_game,
-            baseline: baseline.power_play_points_per_game,
-            digits: 2,
-            floor: 0.1,
-            higherIsBetter: true,
-          },
-          {
-            label: "TOI / GP",
-            current: current.time_on_ice_per_game,
-            baseline: baseline.time_on_ice_per_game,
-            digits: 1,
-            floor: 10,
-            higherIsBetter: true,
-          },
-          {
-            label: "Hits + Blocks / GP",
-            current: current.hits_per_game + current.blocks_per_game,
-            baseline: baseline.hits_per_game + baseline.blocks_per_game,
-            digits: 2,
-            floor: 1,
-            higherIsBetter: true,
-          },
-        ];
-
-    const drivers = metrics
-      .map<ScoreDriver>((metric) => {
-        const denominator = Math.max(Math.abs(metric.baseline), metric.floor);
-        const rawDelta = (metric.current - metric.baseline) / denominator;
-        const alignedDelta = metric.higherIsBetter ? rawDelta : -rawDelta;
-        const impactPercent = Math.max(-95, Math.min(95, alignedDelta * 100));
-        return {
-          label: metric.label,
-          currentLabel: metric.current.toFixed(metric.digits),
-          baselineLabel: metric.baseline.toFixed(metric.digits),
-          impactPercent,
-        };
-      })
-      .sort((a, b) => Math.abs(b.impactPercent) - Math.abs(a.impactPercent))
+  const topContributors = useMemo(() => {
+    if (!scoreBreakdown) return [];
+    return [...scoreBreakdown.components]
+      .filter((component) => Math.abs(component.final_contribution) > 0.01)
+      .sort((a, b) => Math.abs(b.final_contribution) - Math.abs(a.final_contribution))
       .slice(0, 4);
-
-    return {
-      trendSummary,
-      drivers,
-    };
-  }, [isGoalie, player?.rolling_stats, signals.trend_direction]);
+  }, [scoreBreakdown]);
 
   if (!playerId) {
     return <p className="error">Missing player id.</p>;
   }
 
   const palette = teamTheme(player?.team ?? "");
-  const score = Math.max(0, Math.min(100, Math.round(primaryStats?.streamer_score ?? player?.current_streamer_score ?? 0)));
+  const score = Math.max(
+    0,
+    Math.min(100, Math.round(scoreBreakdown?.final_score ?? primaryStats?.streamer_score ?? player?.current_streamer_score ?? 0)),
+  );
   const ringStyle: CSSProperties = {
     background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
   };
@@ -347,11 +251,11 @@ export default function PlayerDetailPage() {
       <section className="card ios-card player-panel score-explainer-panel">
         <div className="list-head panel-head">
           <h3>Streamer Score Explainer</h3>
-          <small className="muted">L10 vs Season</small>
+          <small className="muted">{scoreBreakdown?.window ?? "L10"} true model</small>
         </div>
         <p className="muted score-explainer-copy">
-          Streamer score is a 0-100 form rating. It blends recent production, trend signals, and role stability from
-          your rolling windows.
+          This is the exact backend calculation. Contributions below are the true weighted components used to produce
+          this player&apos;s streamer score.
         </p>
         <div className="score-explainer-meta">
           <article className="score-meta-pill">
@@ -361,38 +265,68 @@ export default function PlayerDetailPage() {
           <article className="score-meta-pill">
             <small>Trend Signal</small>
             <strong>
-              {signals.trend_direction === "hot"
+              {(scoreBreakdown?.trend_direction ?? signals.trend_direction) === "hot"
                 ? "Trending Up"
-                : signals.trend_direction === "cold"
+                : (scoreBreakdown?.trend_direction ?? signals.trend_direction) === "cold"
                   ? "Trending Down"
                   : "Stable"}
             </strong>
           </article>
           <article className="score-meta-pill">
             <small>Window</small>
-            <strong>{primaryStats?.window ?? "L10"}</strong>
+            <strong>{scoreBreakdown?.window ?? primaryStats?.window ?? "L10"}</strong>
           </article>
         </div>
-        <p className="muted score-explainer-copy">{scoreExplainer.trendSummary}</p>
-        <div className="score-driver-list">
-          {scoreExplainer.drivers.length > 0 ? (
-            scoreExplainer.drivers.map((driver) => (
-              <article key={driver.label} className="score-driver-row">
+        {topContributors.length > 0 ? (
+          <div className="score-driver-list">
+            {topContributors.map((component) => (
+              <article key={component.key} className="score-driver-row">
                 <div className="score-driver-main">
-                  <strong>{driver.label}</strong>
-                  <small className="muted">
-                    {driver.currentLabel} now vs {driver.baselineLabel} season
-                  </small>
+                  <strong>{component.label}</strong>
+                  <small className="muted">{componentFormula(component)}</small>
                 </div>
-                <span className={`score-driver-impact ${driver.impactPercent >= 0 ? "positive" : "negative"}`}>
-                  {formatSignedPercent(driver.impactPercent)}
+                <span
+                  className={`score-driver-impact ${component.final_contribution >= 0 ? "positive" : "negative"}`}
+                >
+                  {formatSigned(component.final_contribution)}
                 </span>
               </article>
-            ))
-          ) : (
-            <p className="muted">No score drivers available yet.</p>
-          )}
-        </div>
+            ))}
+          </div>
+        ) : null}
+
+        {scoreBreakdown ? (
+          <details className="score-breakdown-details">
+            <summary>Show Full Contribution Breakdown</summary>
+            <div className="score-breakdown-meta">
+              <span className="badge">Base: {scoreBreakdown.base_score.toFixed(1)}</span>
+              <span className="badge">League Blend: {(scoreBreakdown.league_blend_weight * 100).toFixed(0)}%</span>
+              {scoreBreakdown.sample_factor !== null && scoreBreakdown.sample_factor !== undefined ? (
+                <span className="badge">Sample Factor: {scoreBreakdown.sample_factor.toFixed(2)}x</span>
+              ) : null}
+            </div>
+            <div className="score-breakdown-table">
+              {scoreBreakdown.components.map((component) => (
+                <article key={component.key} className="score-breakdown-row">
+                  <div className="score-breakdown-main">
+                    <strong>{component.label}</strong>
+                    <small className="muted">
+                      {componentFormula(component) || "No direct metric input"}
+                      {component.notes ? ` • ${component.notes}` : ""}
+                    </small>
+                  </div>
+                  <span
+                    className={`score-driver-impact ${component.final_contribution >= 0 ? "positive" : "negative"}`}
+                  >
+                    {formatSigned(component.final_contribution)}
+                  </span>
+                </article>
+              ))}
+            </div>
+          </details>
+        ) : (
+          <p className="muted">Score breakdown unavailable for this player/window.</p>
+        )}
       </section>
 
       <section className="card ios-card player-panel stat-panel">

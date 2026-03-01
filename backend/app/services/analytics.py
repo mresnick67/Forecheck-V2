@@ -900,6 +900,594 @@ class AnalyticsService:
         return AnalyticsService._clamp(blended, 0.0, 100.0)
 
     @staticmethod
+    def explain_streamer_score(
+        player: Player,
+        rolling_stats: PlayerRollingStats,
+        score_config: Optional[dict[str, Any]] = None,
+        league_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        config = score_config or get_default_streamer_score_config()
+        if player.position == "G":
+            return AnalyticsService._explain_goalie_streamer_score(
+                player=player,
+                rolling_stats=rolling_stats,
+                score_config=config,
+                league_context=league_context,
+            )
+        return AnalyticsService._explain_skater_streamer_score(
+            player=player,
+            rolling_stats=rolling_stats,
+            score_config=config,
+            league_context=league_context,
+        )
+
+    @staticmethod
+    def _explain_skater_streamer_score(
+        player: Player,
+        rolling_stats: PlayerRollingStats,
+        score_config: dict[str, Any],
+        league_context: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        def _component(
+            key: str,
+            label: str,
+            *,
+            enabled: bool,
+            metric_value: Optional[float] = None,
+            cap: Optional[float] = None,
+            weight: Optional[float] = None,
+            normalized_value: Optional[float] = None,
+            raw_contribution: float = 0.0,
+            notes: Optional[str] = None,
+        ) -> dict[str, Any]:
+            return {
+                "key": key,
+                "label": label,
+                "enabled": enabled,
+                "metric_value": metric_value,
+                "cap": cap,
+                "weight": weight,
+                "normalized_value": normalized_value,
+                "raw_contribution": raw_contribution,
+                "base_contribution": 0.0,
+                "final_contribution": 0.0,
+                "notes": notes,
+            }
+
+        def _scaled(metric: float, cap: float, weight: float) -> tuple[float, float]:
+            if cap <= 0:
+                return 0.0, 0.0
+            normalized = AnalyticsService._clamp(metric / cap)
+            return normalized, normalized * weight
+
+        skater_cfg = score_config.get("skater", {})
+        weights = skater_cfg.get("weights", {})
+        caps_cfg = skater_cfg.get("caps", {})
+        toggles = skater_cfg.get("toggles", {})
+        toi_gate_cfg = skater_cfg.get("toi_gate", {})
+
+        is_defense = player.position == "D"
+        caps = caps_cfg.get("defense" if is_defense else "forward", {})
+
+        ppg = float(rolling_stats.points_per_game or 0.0)
+        spg = float(rolling_stats.shots_per_game or 0.0)
+        ppp_pg = float(rolling_stats.power_play_points_per_game or 0.0)
+        toi_pg = float(rolling_stats.time_on_ice_per_game or 0.0)
+        pm_pg = float(rolling_stats.plus_minus_per_game or 0.0)
+        hpg = float(rolling_stats.hits_per_game or 0.0)
+        bpg = float(rolling_stats.blocks_per_game or 0.0)
+        trend = str(rolling_stats.trend_direction or "stable")
+        ownership = float(player.ownership_percentage or 0.0)
+        games_played = int(rolling_stats.games_played or 0)
+
+        components: list[dict[str, Any]] = []
+
+        points_norm, points_contrib = _scaled(
+            ppg,
+            float(caps.get("points_per_game", 1.0)),
+            float(weights.get("points_per_game", 0.0)),
+        )
+        components.append(
+            _component(
+                "points_per_game",
+                "Points / GP",
+                enabled=True,
+                metric_value=ppg,
+                cap=float(caps.get("points_per_game", 1.0)),
+                weight=float(weights.get("points_per_game", 0.0)),
+                normalized_value=points_norm,
+                raw_contribution=points_contrib,
+            )
+        )
+
+        shots_norm, shots_contrib = _scaled(
+            spg,
+            float(caps.get("shots_per_game", 1.0)),
+            float(weights.get("shots_per_game", 0.0)),
+        )
+        components.append(
+            _component(
+                "shots_per_game",
+                "Shots / GP",
+                enabled=True,
+                metric_value=spg,
+                cap=float(caps.get("shots_per_game", 1.0)),
+                weight=float(weights.get("shots_per_game", 0.0)),
+                normalized_value=shots_norm,
+                raw_contribution=shots_contrib,
+            )
+        )
+
+        ppp_norm, ppp_contrib = _scaled(
+            ppp_pg,
+            float(caps.get("power_play_points_per_game", 1.0)),
+            float(weights.get("power_play_points_per_game", 0.0)),
+        )
+        components.append(
+            _component(
+                "power_play_points_per_game",
+                "Power Play Points / GP",
+                enabled=True,
+                metric_value=ppp_pg,
+                cap=float(caps.get("power_play_points_per_game", 1.0)),
+                weight=float(weights.get("power_play_points_per_game", 0.0)),
+                normalized_value=ppp_norm,
+                raw_contribution=ppp_contrib,
+            )
+        )
+
+        toi_norm, toi_contrib = _scaled(
+            toi_pg,
+            float(caps.get("time_on_ice_per_game", 1.0)),
+            float(weights.get("time_on_ice_per_game", 0.0)),
+        )
+        components.append(
+            _component(
+                "time_on_ice_per_game",
+                "Time On Ice / GP",
+                enabled=True,
+                metric_value=toi_pg,
+                cap=float(caps.get("time_on_ice_per_game", 1.0)),
+                weight=float(weights.get("time_on_ice_per_game", 0.0)),
+                normalized_value=toi_norm,
+                raw_contribution=toi_contrib,
+            )
+        )
+
+        use_hits_blocks = bool(toggles.get("use_hits_blocks", True))
+        hits_blocks_metric = hpg + bpg
+        hits_blocks_norm, hits_blocks_contrib = _scaled(
+            hits_blocks_metric,
+            float(caps.get("hits_blocks_per_game", 1.0)),
+            float(weights.get("hits_blocks_per_game", 0.0)),
+        )
+        components.append(
+            _component(
+                "hits_blocks_per_game",
+                "Hits + Blocks / GP",
+                enabled=use_hits_blocks,
+                metric_value=hits_blocks_metric,
+                cap=float(caps.get("hits_blocks_per_game", 1.0)),
+                weight=float(weights.get("hits_blocks_per_game", 0.0)),
+                normalized_value=hits_blocks_norm,
+                raw_contribution=hits_blocks_contrib if use_hits_blocks else 0.0,
+                notes=None if use_hits_blocks else "Disabled in skater toggles",
+            )
+        )
+
+        use_plus_minus = bool(toggles.get("use_plus_minus", True))
+        plus_minus_norm = AnalyticsService._clamp((pm_pg + 1.0) / 2.0)
+        plus_minus_weight = float(weights.get("plus_minus_per_game", 0.0))
+        plus_minus_contrib = plus_minus_norm * plus_minus_weight if use_plus_minus else 0.0
+        components.append(
+            _component(
+                "plus_minus_per_game",
+                "Plus Minus / GP",
+                enabled=use_plus_minus,
+                metric_value=pm_pg,
+                weight=plus_minus_weight,
+                normalized_value=plus_minus_norm,
+                raw_contribution=plus_minus_contrib,
+                notes=None if use_plus_minus else "Disabled in skater toggles",
+            )
+        )
+
+        use_trend_bonus = bool(toggles.get("use_trend_bonus", True))
+        trend_hot_bonus = float(weights.get("trend_hot_bonus", 0.0))
+        trend_stable_bonus = float(weights.get("trend_stable_bonus", 0.0))
+        trend_contrib = 0.0
+        if use_trend_bonus:
+            if trend == "hot":
+                trend_contrib = trend_hot_bonus
+            elif trend == "stable":
+                trend_contrib = trend_stable_bonus
+        components.append(
+            _component(
+                "trend_bonus",
+                "Trend Bonus",
+                enabled=use_trend_bonus,
+                weight=trend_hot_bonus if trend == "hot" else trend_stable_bonus,
+                raw_contribution=trend_contrib,
+                notes=f"trend={trend}",
+            )
+        )
+
+        use_toi_gate = bool(toggles.get("use_toi_gate_for_availability", True))
+        if use_toi_gate:
+            toi_gate_floor = float(
+                toi_gate_cfg.get("defense_floor", 16.0)
+                if is_defense
+                else toi_gate_cfg.get("forward_floor", 14.0)
+            )
+            toi_cap = float(caps.get("time_on_ice_per_game", 1.0))
+            toi_gate_range = toi_cap - toi_gate_floor
+            if toi_gate_range > 0:
+                toi_gate_factor = AnalyticsService._clamp((toi_pg - toi_gate_floor) / toi_gate_range)
+            else:
+                toi_gate_factor = 1.0
+        else:
+            toi_gate_factor = 1.0
+
+        use_availability_bonus = bool(toggles.get("use_availability_bonus", False))
+        availability_weight = float(weights.get("availability_bonus", 0.0))
+        availability_norm = AnalyticsService._clamp((100.0 - ownership) / 100.0)
+        availability_contrib = 0.0
+        if use_availability_bonus:
+            availability_contrib = availability_norm * availability_weight * toi_gate_factor
+        components.append(
+            _component(
+                "availability_bonus",
+                "Availability Bonus",
+                enabled=use_availability_bonus,
+                metric_value=ownership,
+                weight=availability_weight,
+                normalized_value=availability_norm,
+                raw_contribution=availability_contrib,
+                notes=(
+                    f"ownership={ownership:.1f}% • TOI gate={toi_gate_factor:.2f}"
+                    if use_availability_bonus
+                    else "Disabled in skater toggles"
+                ),
+            )
+        )
+
+        base_score_before_cap = float(sum(component["raw_contribution"] for component in components))
+        base_cap_factor = 1.0
+        if base_score_before_cap > 100.0 and base_score_before_cap > 0:
+            base_cap_factor = 100.0 / base_score_before_cap
+        base_score = min(base_score_before_cap, 100.0)
+
+        for component in components:
+            component["base_contribution"] = float(component["raw_contribution"] * base_cap_factor)
+
+        league_cfg = score_config.get("league_influence", {})
+        league_fit_score: Optional[float] = None
+        league_blend_weight = 0.0
+        league_component = 0.0
+
+        if bool(league_cfg.get("enabled", True)) and league_context:
+            league_blend_weight = AnalyticsService._clamp(float(league_cfg.get("weight", 0.35)))
+            min_games = int(max(0, float(league_cfg.get("minimum_games", 3))))
+            if min_games > 0 and games_played < min_games:
+                league_blend_weight *= AnalyticsService._clamp(games_played / min_games)
+            if league_blend_weight > 0:
+                league_fit_score = AnalyticsService._calculate_league_fit_score(
+                    league_context=league_context,
+                    position=player.position,
+                    metrics={
+                        "goals": float(rolling_stats.goals_per_game or 0.0),
+                        "assists": float(rolling_stats.assists_per_game or 0.0),
+                        "points": ppg,
+                        "shots": spg,
+                        "hits": hpg,
+                        "blocks": bpg,
+                        "plus_minus": pm_pg,
+                        "pim": float(rolling_stats.pim_per_game or 0.0),
+                        "power_play_points": ppp_pg,
+                        "shorthanded_points": float(rolling_stats.shorthanded_points_per_game or 0.0),
+                        "time_on_ice": toi_pg,
+                    },
+                    score_config=score_config,
+                )
+            if league_fit_score is None:
+                league_blend_weight = 0.0
+
+        if league_blend_weight > 0 and league_fit_score is not None:
+            for component in components:
+                component["final_contribution"] = float(component["base_contribution"] * (1.0 - league_blend_weight))
+            league_component = float(league_fit_score * league_blend_weight)
+        else:
+            for component in components:
+                component["final_contribution"] = float(component["base_contribution"])
+
+        components.append(
+            _component(
+                "league_fit_blend",
+                "League Fit Blend",
+                enabled=league_blend_weight > 0 and league_fit_score is not None,
+                metric_value=league_fit_score,
+                cap=100.0,
+                weight=league_blend_weight,
+                normalized_value=(league_fit_score / 100.0) if league_fit_score is not None else None,
+                raw_contribution=league_component,
+                notes=(
+                    "League influence disabled or no active league"
+                    if league_blend_weight == 0 or league_fit_score is None
+                    else "Weighted blend from active league profile"
+                ),
+            )
+        )
+        components[-1]["base_contribution"] = float(league_component)
+        components[-1]["final_contribution"] = float(league_component)
+
+        final_score = AnalyticsService._clamp(
+            ((1.0 - league_blend_weight) * base_score) + league_component,
+            0.0,
+            100.0,
+        )
+
+        return {
+            "player_id": player.id,
+            "window": rolling_stats.window,
+            "position": player.position,
+            "trend_direction": trend,
+            "games_played": games_played,
+            "base_score_before_cap": base_score_before_cap,
+            "base_score": base_score,
+            "base_cap_factor": base_cap_factor,
+            "score_before_sample_penalty": None,
+            "sample_factor": None,
+            "league_fit_score": league_fit_score,
+            "league_blend_weight": league_blend_weight,
+            "league_component_contribution": league_component,
+            "final_score": final_score,
+            "components": components,
+        }
+
+    @staticmethod
+    def _explain_goalie_streamer_score(
+        player: Player,
+        rolling_stats: PlayerRollingStats,
+        score_config: dict[str, Any],
+        league_context: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        def _component(
+            key: str,
+            label: str,
+            *,
+            enabled: bool,
+            metric_value: Optional[float] = None,
+            cap: Optional[float] = None,
+            weight: Optional[float] = None,
+            normalized_value: Optional[float] = None,
+            raw_contribution: float = 0.0,
+            notes: Optional[str] = None,
+        ) -> dict[str, Any]:
+            return {
+                "key": key,
+                "label": label,
+                "enabled": enabled,
+                "metric_value": metric_value,
+                "cap": cap,
+                "weight": weight,
+                "normalized_value": normalized_value,
+                "raw_contribution": raw_contribution,
+                "base_contribution": 0.0,
+                "final_contribution": 0.0,
+                "notes": notes,
+            }
+
+        goalie_cfg = score_config.get("goalie", {})
+        weights = goalie_cfg.get("weights", {})
+        scales = goalie_cfg.get("scales", {})
+        toggles = goalie_cfg.get("toggles", {})
+
+        games_played = int(rolling_stats.games_played or 0)
+        games_started = int(rolling_stats.goalie_games_started or 0)
+        trend = str(rolling_stats.trend_direction or "stable")
+        ownership = float(player.ownership_percentage or 0.0)
+
+        sv_pct = float(rolling_stats.save_percentage or 0.0)
+        gaa = float(rolling_stats.goals_against_average or 0.0)
+        wins = float(rolling_stats.goalie_wins or 0.0)
+
+        sv_floor = float(scales.get("save_percentage_floor", 0.88))
+        sv_range = max(float(scales.get("save_percentage_range", 0.05)), 0.0001)
+        gaa_ceiling = float(scales.get("goals_against_average_ceiling", 3.5))
+        gaa_range = max(float(scales.get("goals_against_average_range", 1.5)), 0.0001)
+
+        sv_norm = AnalyticsService._clamp((sv_pct - sv_floor) / sv_range)
+        sv_contrib = sv_norm * float(weights.get("save_percentage", 0.0))
+
+        gaa_norm = AnalyticsService._clamp((gaa_ceiling - gaa) / gaa_range)
+        gaa_contrib = gaa_norm * float(weights.get("goals_against_average", 0.0))
+
+        win_rate = wins / games_played if games_played > 0 else 0.0
+        wins_norm = AnalyticsService._clamp(win_rate)
+        wins_contrib = wins_norm * float(weights.get("wins", 0.0))
+
+        expected_games = AnalyticsService.WINDOW_SIZES.get(rolling_stats.window) or games_played
+        denom_games = expected_games if expected_games and expected_games > 0 else games_played
+        start_rate = games_started / denom_games if denom_games > 0 else 0.0
+        starts_norm = AnalyticsService._clamp(start_rate)
+        starts_contrib = starts_norm * float(weights.get("starts", 0.0))
+
+        components: list[dict[str, Any]] = [
+            _component(
+                "save_percentage",
+                "Save Percentage",
+                enabled=True,
+                metric_value=sv_pct,
+                cap=sv_floor + sv_range,
+                weight=float(weights.get("save_percentage", 0.0)),
+                normalized_value=sv_norm,
+                raw_contribution=sv_contrib,
+            ),
+            _component(
+                "goals_against_average",
+                "Goals Against Average",
+                enabled=True,
+                metric_value=gaa,
+                cap=gaa_ceiling,
+                weight=float(weights.get("goals_against_average", 0.0)),
+                normalized_value=gaa_norm,
+                raw_contribution=gaa_contrib,
+            ),
+            _component(
+                "wins",
+                "Wins Rate",
+                enabled=True,
+                metric_value=win_rate,
+                cap=1.0,
+                weight=float(weights.get("wins", 0.0)),
+                normalized_value=wins_norm,
+                raw_contribution=wins_contrib,
+            ),
+            _component(
+                "starts",
+                "Start Share",
+                enabled=True,
+                metric_value=start_rate,
+                cap=1.0,
+                weight=float(weights.get("starts", 0.0)),
+                normalized_value=starts_norm,
+                raw_contribution=starts_contrib,
+            ),
+        ]
+
+        use_trend_bonus = bool(toggles.get("use_trend_bonus", True))
+        trend_hot_bonus = float(weights.get("trend_hot_bonus", 0.0))
+        trend_stable_bonus = float(weights.get("trend_stable_bonus", 0.0))
+        trend_contrib = 0.0
+        if use_trend_bonus:
+            if trend == "hot":
+                trend_contrib = trend_hot_bonus
+            elif trend == "stable":
+                trend_contrib = trend_stable_bonus
+        components.append(
+            _component(
+                "trend_bonus",
+                "Trend Bonus",
+                enabled=use_trend_bonus,
+                weight=trend_hot_bonus if trend == "hot" else trend_stable_bonus,
+                raw_contribution=trend_contrib,
+                notes=f"trend={trend}",
+            )
+        )
+
+        use_availability_bonus = bool(toggles.get("use_availability_bonus", False))
+        availability_weight = float(weights.get("availability_bonus", 0.0))
+        availability_norm = AnalyticsService._clamp((100.0 - ownership) / 100.0)
+        availability_contrib = availability_norm * availability_weight if use_availability_bonus else 0.0
+        components.append(
+            _component(
+                "availability_bonus",
+                "Availability Bonus",
+                enabled=use_availability_bonus,
+                metric_value=ownership,
+                weight=availability_weight,
+                normalized_value=availability_norm,
+                raw_contribution=availability_contrib,
+                notes=(
+                    f"ownership={ownership:.1f}%"
+                    if use_availability_bonus
+                    else "Disabled in goalie toggles"
+                ),
+            )
+        )
+
+        score_before_sample_penalty = float(sum(component["raw_contribution"] for component in components))
+        use_sample_penalty = bool(toggles.get("use_sample_penalty", True))
+        sample_factor = 0.7 if use_sample_penalty and games_played <= 1 else 1.0
+        for component in components:
+            component["raw_contribution"] = float(component["raw_contribution"] * sample_factor)
+
+        base_score_before_cap = float(sum(component["raw_contribution"] for component in components))
+        base_cap_factor = 1.0
+        if base_score_before_cap > 100.0 and base_score_before_cap > 0:
+            base_cap_factor = 100.0 / base_score_before_cap
+        base_score = min(base_score_before_cap, 100.0)
+        for component in components:
+            component["base_contribution"] = float(component["raw_contribution"] * base_cap_factor)
+
+        league_cfg = score_config.get("league_influence", {})
+        league_fit_score: Optional[float] = None
+        league_blend_weight = 0.0
+        league_component = 0.0
+
+        if bool(league_cfg.get("enabled", True)) and league_context:
+            league_blend_weight = AnalyticsService._clamp(float(league_cfg.get("weight", 0.35)))
+            min_games = int(max(0, float(league_cfg.get("minimum_games", 3))))
+            if min_games > 0 and games_played < min_games:
+                league_blend_weight *= AnalyticsService._clamp(games_played / min_games)
+            if league_blend_weight > 0:
+                league_fit_score = AnalyticsService._calculate_league_fit_score(
+                    league_context=league_context,
+                    position=player.position,
+                    metrics={
+                        "save_percentage": sv_pct,
+                        "goals_against_average": gaa,
+                        "wins": wins,
+                        "starts": float(games_started),
+                    },
+                    score_config=score_config,
+                )
+            if league_fit_score is None:
+                league_blend_weight = 0.0
+
+        if league_blend_weight > 0 and league_fit_score is not None:
+            for component in components:
+                component["final_contribution"] = float(component["base_contribution"] * (1.0 - league_blend_weight))
+            league_component = float(league_fit_score * league_blend_weight)
+        else:
+            for component in components:
+                component["final_contribution"] = float(component["base_contribution"])
+
+        components.append(
+            _component(
+                "league_fit_blend",
+                "League Fit Blend",
+                enabled=league_blend_weight > 0 and league_fit_score is not None,
+                metric_value=league_fit_score,
+                cap=100.0,
+                weight=league_blend_weight,
+                normalized_value=(league_fit_score / 100.0) if league_fit_score is not None else None,
+                raw_contribution=league_component,
+                notes=(
+                    "League influence disabled or no active league"
+                    if league_blend_weight == 0 or league_fit_score is None
+                    else "Weighted blend from active league profile"
+                ),
+            )
+        )
+        components[-1]["base_contribution"] = float(league_component)
+        components[-1]["final_contribution"] = float(league_component)
+
+        final_score = AnalyticsService._clamp(
+            ((1.0 - league_blend_weight) * base_score) + league_component,
+            0.0,
+            100.0,
+        )
+
+        return {
+            "player_id": player.id,
+            "window": rolling_stats.window,
+            "position": player.position,
+            "trend_direction": trend,
+            "games_played": games_played,
+            "base_score_before_cap": base_score_before_cap,
+            "base_score": base_score,
+            "base_cap_factor": base_cap_factor,
+            "score_before_sample_penalty": score_before_sample_penalty,
+            "sample_factor": sample_factor,
+            "league_fit_score": league_fit_score,
+            "league_blend_weight": league_blend_weight,
+            "league_component_contribution": league_component,
+            "final_score": final_score,
+            "components": components,
+        }
+
+    @staticmethod
     def _empty_rolling_stats(
         player_id: str,
         window: str,

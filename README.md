@@ -13,6 +13,7 @@ Forecheck v2 is the clean break from v1 (Fly + iOS): Docker-first, analytics-onl
 - [Core features](#core-features)
 - [Streamer score model](#streamer-score-model)
 - [Worker and sync pipeline](#worker-and-sync-pipeline)
+- [Migration checklist (v1 -> v2)](#migration-checklist-v1---v2)
 - [Configuration](#configuration)
 - [Operations guide](#operations-guide)
 - [Troubleshooting](#troubleshooting)
@@ -137,7 +138,9 @@ Key endpoint:
 Player page includes:
 
 - Team-themed hero with headshot/logo and score ring.
-- **Streamer Score Explainer** card (L10 vs Season signals + trend context).
+- **Streamer Score Explainer** card with exact backend contribution breakdown.
+  - compact top contributors
+  - expandable full component table (caps, weights, normalized values, and final contribution)
 - Stat comparison table across windows.
 - Recent games and upcoming schedule (opponent color chips).
 - Preset signal tags (e.g., trending + matching scans).
@@ -145,6 +148,7 @@ Player page includes:
 Key endpoints:
 
 - `GET /players/{id}`
+- `GET /players/{id}/score-breakdown`
 - `GET /players/{id}/signals`
 - `GET /players/{id}/schedule`
 
@@ -204,6 +208,7 @@ Key endpoints:
 - Streamer score model editor:
   - league influence toggles/weights
   - skater/goalie weights/scales/toggles
+  - live skater/goalie weight budget indicators (`All Weights`, `Active Hot Max`, `Active Stable Max`)
   - save + start full recalculation
   - live progress bar and run state
 
@@ -233,6 +238,15 @@ It supports optional **league influence blending**:
 - Uses `minimum_games` to down-weight league influence for tiny samples.
 
 Model config persists in `app_settings` (`streamer_score_config`) and is editable in UI.
+
+### Weight totals and calibration
+
+- Weights do **not** need to sum to exactly `100`.
+- In practice, keeping active max budgets near ~`100` avoids over-clipping many players at score cap.
+- Settings shows three budget hints per skater/goalie model:
+  - `All Weights`: raw sum of all configured weights
+  - `Active Hot Max`: effective max base budget when hot trend path is active
+  - `Active Stable Max`: effective max base budget for stable trend path
 
 ## Worker and sync pipeline
 
@@ -309,6 +323,34 @@ Includes:
 - game-log row count and date range
 - running jobs
 - recent run history
+
+## Migration checklist (v1 -> v2)
+
+Use this as an operational checklist for migration closure.
+
+### Completed in v2 codebase
+
+- [x] Standalone repo and all-in-one Docker Compose stack.
+- [x] Self-hosted PWA on `http://localhost:6767`.
+- [x] Single-owner bootstrap (`/setup/status`, `/setup/bootstrap`) and registration-off default.
+- [x] Social/feed/notification surfaces removed from product scope.
+- [x] Core analytics feature parity: Discover, Explore, Player Detail, Scans, Leagues, Settings/Admin.
+- [x] Worker + sync pipeline + full-season backfill controls.
+- [x] Streamer score settings editor + full recalculation progress.
+- [x] Scan favorites + alert feed (“What’s New”).
+- [x] True per-player streamer-score contribution breakdown API/UI.
+
+### Verify/finish (may still be pending outside this repo)
+
+- [ ] Update legacy v1 README with pointer to this v2 repo.
+- [ ] Create final v1 tag/release notes (legacy archive marker).
+- [ ] Set legacy v1 GitHub repo to archived/read-only.
+- [ ] Confirm legacy Fly resources are scaled down/removed if no longer needed.
+- [ ] Keep Yahoo local OAuth disabled for local-first flow unless explicitly reintroduced.
+
+### Future roadmap item (planned)
+
+- [ ] Chrome extension approach for Yahoo site overlay, using local Forecheck v2 data as source-of-truth.
 
 ## Configuration
 

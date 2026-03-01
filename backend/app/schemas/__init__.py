@@ -2,7 +2,8 @@ from app.schemas.user import User, UserCreate, UserUpdate, UserInDB, Token, Toke
 from app.schemas.player import (
     Player, PlayerCreate, PlayerUpdate,
     PlayerGameStats, PlayerGameStatsCreate,
-    PlayerRollingStats, PlayerWithStats
+    PlayerRollingStats, PlayerWithStats,
+    StreamerScoreComponent, StreamerScoreBreakdown,
 )
 from app.schemas.game import Game, GameCreate, GameUpdate
 from app.schemas.scan import Scan, ScanCreate, ScanUpdate, ScanRule, ScanRuleCreate
@@ -14,6 +15,7 @@ __all__ = [
     "Player", "PlayerCreate", "PlayerUpdate",
     "PlayerGameStats", "PlayerGameStatsCreate",
     "PlayerRollingStats", "PlayerWithStats",
+    "StreamerScoreComponent", "StreamerScoreBreakdown",
     "Game", "GameCreate", "GameUpdate",
     "Scan", "ScanCreate", "ScanUpdate", "ScanRule", "ScanRuleCreate",
     "League", "LeagueCreate", "LeagueUpdate",

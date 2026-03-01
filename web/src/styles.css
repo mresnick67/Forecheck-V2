@@ -348,6 +348,41 @@ h3 {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
+.weight-budget-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.weight-budget {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(152, 165, 185, 0.35);
+  background: rgba(18, 23, 30, 0.9);
+  color: #d6dfed;
+  font-size: 0.78rem;
+}
+
+.weight-budget.target {
+  border-color: rgba(71, 208, 131, 0.55);
+  color: #7ef0a8;
+  background: rgba(41, 108, 70, 0.25);
+}
+
+.weight-budget.over {
+  border-color: rgba(255, 107, 139, 0.55);
+  color: #ff9db2;
+  background: rgba(130, 44, 67, 0.24);
+}
+
+.weight-budget.under {
+  border-color: rgba(246, 195, 68, 0.55);
+  color: #f7d27d;
+  background: rgba(120, 92, 31, 0.24);
+}
+
 .score-toggle-grid {
   display: grid;
   gap: 6px;
@@ -949,6 +984,43 @@ button.danger {
   color: #ff8aa6;
   border-color: rgba(255, 107, 139, 0.45);
   background: rgba(141, 46, 72, 0.22);
+}
+
+.score-breakdown-details {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+
+.score-breakdown-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #dce6f5;
+}
+
+.score-breakdown-meta {
+  margin-top: 10px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.score-breakdown-table {
+  margin-top: 10px;
+  display: grid;
+}
+
+.score-breakdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.score-breakdown-main {
+  display: grid;
+  gap: 2px;
 }
 
 .player-hero-main {

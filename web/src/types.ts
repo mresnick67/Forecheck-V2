@@ -81,3 +81,35 @@ export type League = {
   is_active: boolean;
   updated_at?: string;
 };
+
+export type StreamerScoreComponent = {
+  key: string;
+  label: string;
+  enabled: boolean;
+  metric_value?: number | null;
+  cap?: number | null;
+  weight?: number | null;
+  normalized_value?: number | null;
+  raw_contribution: number;
+  base_contribution: number;
+  final_contribution: number;
+  notes?: string | null;
+};
+
+export type StreamerScoreBreakdown = {
+  player_id: string;
+  window: string;
+  position: string;
+  trend_direction?: string | null;
+  games_played: number;
+  base_score_before_cap: number;
+  base_score: number;
+  base_cap_factor: number;
+  score_before_sample_penalty?: number | null;
+  sample_factor?: number | null;
+  league_fit_score?: number | null;
+  league_blend_weight: number;
+  league_component_contribution: number;
+  final_score: number;
+  components: StreamerScoreComponent[];
+};
