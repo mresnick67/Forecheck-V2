@@ -2,6 +2,7 @@ import { CSSProperties, FormEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { authRequest, publicRequest } from "../api";
+import { PlayerAvatar, TeamLogo } from "../components/NhlAssets";
 import type { AuthSession, Player, Scan, ScanRule } from "../types";
 
 type ScansPageProps = {
@@ -56,15 +57,6 @@ function scoreColor(score: number): string {
 function formatRule(rule: ScanRule): string {
   const compare = rule.compare_window ? ` vs ${rule.compare_window}` : "";
   return `${rule.stat} ${rule.comparator} ${rule.value} (${rule.window}${compare})`;
-}
-
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
 }
 
 function emptyRule(): ScanRule {
@@ -516,11 +508,15 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                 };
                 return (
                   <Link key={player.id} to={`/players/${player.id}`} className="player-row">
-                    <div className="avatar">{initials(player.name)}</div>
+                    <PlayerAvatar playerId={player.id} name={player.name} />
                     <div className="player-main">
                       <strong>{player.name}</strong>
                       <p className="muted compact">
-                        {player.team} <span className="badge-pos">{player.position}</span> • {player.ownership_percentage.toFixed(1)}% owned
+                        <span className="team-inline">
+                          <TeamLogo team={player.team} />
+                          {player.team}
+                        </span>{" "}
+                        <span className="badge-pos">{player.position}</span> • {player.ownership_percentage.toFixed(1)}% owned
                       </p>
                     </div>
                     <div className="score-ring" style={ringStyle}>
@@ -544,11 +540,15 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                 };
                 return (
                   <Link key={player.id} to={`/players/${player.id}`} className="player-row">
-                    <div className="avatar">{initials(player.name)}</div>
+                    <PlayerAvatar playerId={player.id} name={player.name} />
                     <div className="player-main">
                       <strong>{player.name}</strong>
                       <p className="muted compact">
-                        {player.team} <span className="badge-pos">{player.position}</span> • {player.ownership_percentage.toFixed(1)}% owned
+                        <span className="team-inline">
+                          <TeamLogo team={player.team} />
+                          {player.team}
+                        </span>{" "}
+                        <span className="badge-pos">{player.position}</span> • {player.ownership_percentage.toFixed(1)}% owned
                       </p>
                     </div>
                     <div className="score-ring" style={ringStyle}>

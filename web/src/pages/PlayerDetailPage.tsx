@@ -2,6 +2,7 @@ import { CSSProperties, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { publicRequest } from "../api";
+import { PlayerAvatar, TeamLogo } from "../components/NhlAssets";
 import type { Player } from "../types";
 
 type RollingStats = {
@@ -142,11 +143,22 @@ export default function PlayerDetailPage() {
     <div className="page-stack">
       <section className="card ios-card player-hero">
         <div className="player-hero-main">
-          <h2>{player ? player.name : "Loading player..."}</h2>
+          {player ? (
+            <div className="player-heading">
+              <PlayerAvatar playerId={player.id} name={player.name} size="large" />
+              <h2>{player.name}</h2>
+            </div>
+          ) : (
+            <h2>Loading player...</h2>
+          )}
           {player ? (
             <>
               <p className="muted">
-                {player.team} {player.position} {player.number ? `#${player.number}` : ""}
+                <span className="team-inline">
+                  <TeamLogo team={player.team} />
+                  {player.team}
+                </span>{" "}
+                {player.position} {player.number ? `#${player.number}` : ""}
               </p>
               <div className="badge-row">
                 <span className="badge">{(player.ownership_percentage ?? 0).toFixed(1)}% owned</span>

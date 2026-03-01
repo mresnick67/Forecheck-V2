@@ -2,6 +2,7 @@ import { CSSProperties, FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { publicRequest } from "../api";
+import { PlayerAvatar, TeamLogo } from "../components/NhlAssets";
 import type { ExplorePlayer } from "../types";
 
 const WINDOWS = ["L5", "L10", "L20", "Season"] as const;
@@ -17,23 +18,6 @@ function scoreColor(score: number): string {
 function clampScore(score: number): number {
   if (!Number.isFinite(score)) return 0;
   return Math.max(0, Math.min(100, Math.round(score)));
-}
-
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
-
-function teamHue(team: string): number {
-  let hash = 0;
-  for (let i = 0; i < team.length; i += 1) {
-    hash = (hash * 31 + team.charCodeAt(i)) % 360;
-  }
-  return Math.abs(hash);
 }
 
 export default function ExplorePage() {
@@ -230,21 +214,20 @@ export default function ExplorePage() {
             const ringStyle: CSSProperties = {
               background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
             };
-            const avatarStyle: CSSProperties = {
-              background: `radial-gradient(circle at 30% 20%, hsl(${teamHue(player.team)} 72% 40%), #101727 75%)`,
-            };
 
             return (
               <Link key={player.id} to={`/players/${player.id}`} className="player-row">
-                <div className="avatar" style={avatarStyle}>
-                  {initials(player.name)}
-                </div>
+                <PlayerAvatar playerId={player.id} name={player.name} />
                 <div className="player-main">
                   <div className="player-row-top">
                     <strong>{player.name}</strong>
                   </div>
                   <p className="muted compact">
-                    {player.team} <span className="badge-pos">{player.position}</span> •{" "}
+                    <span className="team-inline">
+                      <TeamLogo team={player.team} />
+                      {player.team}
+                    </span>{" "}
+                    <span className="badge-pos">{player.position}</span> •{" "}
                     {player.ownership_percentage.toFixed(1)}% owned • {player.games_played} GP
                   </p>
                   {player.position === "G" ? (

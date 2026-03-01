@@ -9,6 +9,7 @@ Self-hosted fantasy hockey analytics platform for one local owner user.
 - All-in-one Docker Compose setup.
 - Single-owner bootstrap flow (`/setup/bootstrap`) with public registration disabled by default.
 - Local-first defaults with no required third-party auth provider.
+- NHL headshots and team logos rendered from official public asset URLs.
 
 ## What v2 removes
 

@@ -463,12 +463,40 @@ button.danger {
   color: #eaf4ff;
   border: 1px solid rgba(189, 211, 249, 0.32);
   background: radial-gradient(circle at 28% 20%, rgba(64, 135, 206, 0.75), rgba(11, 22, 43, 0.98));
+  overflow: hidden;
 }
 
 .avatar.small {
   width: 38px;
   height: 38px;
   font-size: 0.85rem;
+}
+
+.avatar.large {
+  width: 62px;
+  height: 62px;
+  font-size: 1.05rem;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+}
+
+.team-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.team-logo {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .score-ring {
@@ -522,6 +550,13 @@ button.danger {
 
 .player-hero-main {
   min-width: 0;
+}
+
+.player-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 2px;
 }
 
 .badge-row {

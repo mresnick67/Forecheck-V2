@@ -2,6 +2,7 @@ import { CSSProperties, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { publicRequest } from "../api";
+import { PlayerAvatar, TeamLogo } from "../components/NhlAssets";
 import type { Player, Scan } from "../types";
 
 type TrendResponse = {
@@ -35,15 +36,6 @@ function scoreColor(score: number): string {
   if (score >= 60) return "#2bb8f1";
   if (score >= 45) return "#f6c344";
   return "#ff6f86";
-}
-
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
 }
 
 function presetRank(scan: Scan): number {
@@ -134,10 +126,14 @@ export default function DiscoverPage() {
             };
             return (
               <Link className="streamer-card" key={player.id} to={`/players/${player.id}`}>
-                <div className="avatar small">{initials(player.name)}</div>
+                <PlayerAvatar playerId={player.id} name={player.name} size="small" />
                 <strong>{player.name}</strong>
                 <p className="muted compact">
-                  {player.team} <span className="badge-pos">{player.position}</span>
+                  <span className="team-inline">
+                    <TeamLogo team={player.team} />
+                    {player.team}
+                  </span>{" "}
+                  <span className="badge-pos">{player.position}</span>
                 </p>
                 <div className="score-ring compact" style={ringStyle}>
                   <span>{score}</span>
@@ -164,14 +160,18 @@ export default function DiscoverPage() {
               return (
                 <Link className="discover-player-card" key={player.id} to={`/players/${player.id}`}>
                   <div className="discover-player-top">
-                    <div className="avatar small">{initials(player.name)}</div>
+                    <PlayerAvatar playerId={player.id} name={player.name} size="small" />
                     <div className="score-ring compact" style={ringStyle}>
                       <span>{score}</span>
                     </div>
                   </div>
                   <strong>{player.name}</strong>
                   <p className="muted compact">
-                    {player.team} <span className="badge-pos">{player.position}</span>
+                    <span className="team-inline">
+                      <TeamLogo team={player.team} />
+                      {player.team}
+                    </span>{" "}
+                    <span className="badge-pos">{player.position}</span>
                   </p>
                   <small className="muted">{Math.round(player.ownership_percentage)}% owned</small>
                 </Link>
@@ -193,7 +193,11 @@ export default function DiscoverPage() {
             <Link key={player.id} to={`/players/${player.id}`} className="mini-row">
               <span>{player.name}</span>
               <small className="muted">
-                {player.team} {player.position}
+                <span className="team-inline">
+                  <TeamLogo team={player.team} />
+                  {player.team}
+                </span>{" "}
+                {player.position}
               </small>
             </Link>
           ))}
@@ -209,7 +213,11 @@ export default function DiscoverPage() {
             <Link key={player.id} to={`/players/${player.id}`} className="mini-row">
               <span>{player.name}</span>
               <small className="muted">
-                {player.team} {player.position}
+                <span className="team-inline">
+                  <TeamLogo team={player.team} />
+                  {player.team}
+                </span>{" "}
+                {player.position}
               </small>
             </Link>
           ))}
