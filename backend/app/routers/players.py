@@ -55,7 +55,7 @@ async def get_players(
     search: Optional[str] = None,
     position: Optional[str] = None,
     team: Optional[str] = None,
-    sort_by: str = Query("streamer_score", enum=["streamer_score", "name", "team", "ownership"]),
+    sort_by: str = Query("streamer_score", enum=["streamer_score", "name", "team"]),
     limit: int = Query(50, le=100),
     offset: int = 0,
 ):
@@ -83,8 +83,6 @@ async def get_players(
         query = query.order_by(PlayerModel.name)
     elif sort_by == "team":
         query = query.order_by(PlayerModel.team)
-    elif sort_by == "ownership":
-        query = query.order_by(desc(PlayerModel.ownership_percentage))
 
     players = query.offset(offset).limit(limit).all()
     weekly_map = _weekly_schedule_map(db)
@@ -99,8 +97,6 @@ async def explore_players(
     position: Optional[str] = Query(None, description="C, LW, RW, D, G"),
     team: Optional[str] = None,
     min_streamer_score: Optional[float] = Query(None, ge=0, le=100),
-    min_ownership: Optional[float] = Query(None, ge=0, le=100),
-    max_ownership: Optional[float] = Query(None, ge=0, le=100),
     min_games_played: int = Query(1, ge=0, le=82),
     min_weekly_games: int = Query(0, ge=0, le=7),
     min_weekly_light_games: int = Query(0, ge=0, le=7),
@@ -109,7 +105,6 @@ async def explore_players(
         enum=[
             "window_streamer_score",
             "season_streamer_score",
-            "ownership",
             "name",
             "team",
             "points",
@@ -169,10 +164,6 @@ async def explore_players(
         query = query.filter(PlayerModel.team == team)
     if min_streamer_score is not None:
         query = query.filter(RollingStatsModel.streamer_score >= min_streamer_score)
-    if min_ownership is not None:
-        query = query.filter(PlayerModel.ownership_percentage >= min_ownership)
-    if max_ownership is not None:
-        query = query.filter(PlayerModel.ownership_percentage <= max_ownership)
 
     weekly_games_expr = func.coalesce(TeamWeekSchedule.games_total, 0)
     weekly_light_expr = func.coalesce(TeamWeekSchedule.light_games, 0)
@@ -184,7 +175,6 @@ async def explore_players(
     sort_expr = {
         "window_streamer_score": RollingStatsModel.streamer_score,
         "season_streamer_score": PlayerModel.current_streamer_score,
-        "ownership": PlayerModel.ownership_percentage,
         "name": PlayerModel.name,
         "team": PlayerModel.team,
         "points": RollingStatsModel.points_per_game,
@@ -288,12 +278,12 @@ async def get_trending_players(
 
         player_data = {
             "id": player.id,
+            "external_id": player.external_id,
             "name": player.name,
             "team": player.team,
             "position": player.position,
             "headshot_url": player.headshot_url,
             "current_streamer_score": player.current_streamer_score,
-            "ownership_percentage": player.ownership_percentage,
             "trend_direction": stat.trend_direction,
             "games_played": stat.games_played,
             "points_per_game": stat.points_per_game,
@@ -361,12 +351,12 @@ async def get_temperature_players(
 
         player_data = {
             "id": player.id,
+            "external_id": player.external_id,
             "name": player.name,
             "team": player.team,
             "position": player.position,
             "headshot_url": player.headshot_url,
             "current_streamer_score": player.current_streamer_score,
-            "ownership_percentage": player.ownership_percentage,
             "trend_direction": stat.temperature_tag,
             "games_played": stat.games_played,
             "points_per_game": stat.points_per_game,

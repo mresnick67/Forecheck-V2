@@ -30,6 +30,7 @@ from app.services.nhl_stats_api import (
 from app.services.nhl_roster_api import fetch_all_rosters
 from app.services.scan_evaluator import ScanEvaluatorService
 from app.services.season import current_season_id, season_id_for_date, current_game_type
+from app.services.streamer_score_config import get_default_streamer_score_config
 from app.services.yahoo_oauth_service import has_yahoo_credentials
 from app.services.yahoo_service import update_player_ownership
 
@@ -179,6 +180,10 @@ def _parse_time_on_ice(value: Optional[object]) -> float:
     return 0.0
 
 
+def _default_headshot_url(external_id: str) -> str:
+    return f"https://assets.nhle.com/mugs/nhl/latest/{external_id}.png"
+
+
 def _streamer_score_for_skater(
     position: str,
     points: float,
@@ -203,6 +208,7 @@ def _streamer_score_for_skater(
         bpg=bpg,
         trend="stable",
         ownership=0.0,
+        score_config=get_default_streamer_score_config(),
     )
 
 
@@ -217,6 +223,7 @@ def _streamer_score_for_goalie(save_pct: float, gaa: float, wins: float, games: 
         int(games),
         "stable",
         0.0,
+        score_config=get_default_streamer_score_config(),
     )
 
 
@@ -245,7 +252,7 @@ def _skater_snapshot(entry: dict) -> Optional[PlayerSnapshot]:
         team=_normalize_team(team),
         position=_normalize_position(position),
         number=_safe_int(number, default=0) or None,
-        headshot_url=headshot,
+        headshot_url=headshot or _default_headshot_url(str(player_id)),
         current_streamer_score=_streamer_score_for_skater(
             _normalize_position(position),
             points,
@@ -285,7 +292,7 @@ def _goalie_snapshot(entry: dict) -> Optional[PlayerSnapshot]:
         team=_normalize_team(team),
         position="G",
         number=_safe_int(number, default=0) or None,
-        headshot_url=headshot,
+        headshot_url=headshot or _default_headshot_url(str(player_id)),
         current_streamer_score=_streamer_score_for_goalie(save_pct, gaa, wins, games),
         ownership_percentage=0.0,
     )
@@ -317,7 +324,7 @@ def _roster_snapshot(entry: dict) -> Optional[PlayerSnapshot]:
         team=_normalize_team(team),
         position=_normalize_position(position),
         number=_safe_int(number, default=0) or None,
-        headshot_url=headshot,
+        headshot_url=headshot or _default_headshot_url(str(player_id)),
         current_streamer_score=0.0,
         ownership_percentage=0.0,
     )
@@ -390,7 +397,11 @@ def sync_players(db: Session, season_id: Optional[str] = None) -> int:
                 existing.team = snapshot.team
                 existing.position = snapshot.position
                 existing.number = snapshot.number
-                existing.headshot_url = snapshot.headshot_url
+                existing.headshot_url = (
+                    snapshot.headshot_url
+                    or existing.headshot_url
+                    or _default_headshot_url(snapshot.external_id)
+                )
                 # Preserve rolling streamer score and Yahoo ownership if already set.
                 if snapshot.current_streamer_score > 0 and existing.current_streamer_score <= 0:
                     existing.current_streamer_score = snapshot.current_streamer_score
@@ -403,7 +414,7 @@ def sync_players(db: Session, season_id: Optional[str] = None) -> int:
                     team=snapshot.team,
                     position=snapshot.position,
                     number=snapshot.number,
-                    headshot_url=snapshot.headshot_url,
+                    headshot_url=snapshot.headshot_url or _default_headshot_url(snapshot.external_id),
                     current_streamer_score=snapshot.current_streamer_score,
                     ownership_percentage=snapshot.ownership_percentage,
                     is_active=(snapshot.external_id in roster_external_ids) if has_roster_data else True,

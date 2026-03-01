@@ -2,7 +2,7 @@ import { CSSProperties, FormEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { authRequest, publicRequest } from "../api";
-import { PlayerAvatar, TeamLogo } from "../components/NhlAssets";
+import { PlayerAvatar, TeamLogo, teamCardStyle } from "../components/NhlAssets";
 import type { AuthSession, Player, Scan, ScanRule } from "../types";
 
 type ScansPageProps = {
@@ -28,7 +28,6 @@ const STAT_OPTIONS: RuleOption[] = [
   { value: "saves_per_game", label: "Saves / Game" },
   { value: "goals_against_average", label: "Goals Against Average" },
   { value: "b2b_start_opportunity", label: "B2B Spot Start Signal" },
-  { value: "ownership_percentage", label: "Ownership %" },
   { value: "streamer_score", label: "Streamer Score" },
 ];
 
@@ -91,6 +90,13 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
     () => scans.find((scan) => scan.id === selectedScanId) ?? null,
     [scans, selectedScanId],
   );
+  const orderedScans = useMemo(() => {
+    return [...scans].sort((a, b) => {
+      if (a.is_followed !== b.is_followed) return a.is_followed ? -1 : 1;
+      if (a.is_preset !== b.is_preset) return a.is_preset ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [scans]);
   const selectedResults = selectedScanId ? evaluatedByScan[selectedScanId] ?? [] : [];
 
   async function loadScans(refreshCounts: boolean, force = false): Promise<boolean> {
@@ -291,14 +297,64 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
     }
   }
 
+  async function toggleFavorite(scan: Scan) {
+    setError(null);
+    setStatus(null);
+    const nextFollowed = !scan.is_followed;
+    setScans((prev) => prev.map((item) => (item.id === scan.id ? { ...item, is_followed: nextFollowed } : item)));
+    try {
+      await authRequest(
+        `/scans/${scan.id}`,
+        session,
+        onSession,
+        {
+          method: "PUT",
+          json: {
+            is_followed: nextFollowed,
+          },
+        },
+      );
+      setStatus(nextFollowed ? "Scan favorited." : "Scan removed from favorites.");
+    } catch (err) {
+      await loadScans(false);
+      setError(err instanceof Error ? err.message : "Failed to update favorite status");
+    }
+  }
+
+  async function toggleAlerts(scan: Scan) {
+    setError(null);
+    setStatus(null);
+    const nextAlertsEnabled = !scan.alerts_enabled;
+    setScans((prev) =>
+      prev.map((item) => (item.id === scan.id ? { ...item, alerts_enabled: nextAlertsEnabled } : item)),
+    );
+    try {
+      await authRequest(
+        `/scans/${scan.id}`,
+        session,
+        onSession,
+        {
+          method: "PUT",
+          json: {
+            alerts_enabled: nextAlertsEnabled,
+          },
+        },
+      );
+      setStatus(nextAlertsEnabled ? "Scan alerts enabled." : "Scan alerts disabled.");
+    } catch (err) {
+      await loadScans(false);
+      setError(err instanceof Error ? err.message : "Failed to update alerts state");
+    }
+  }
+
   return (
-    <div className="page-stack">
-      <section className="card ios-card">
+    <div className="page-stack scans-page">
+      <section className="card ios-card scans-toolbar">
         <div className="list-head">
           <h2>Scans</h2>
           <small className="muted">{scans.length} total</small>
         </div>
-        <p className="muted">Preset scans are auto-populated. Build custom scans and preview before saving.</p>
+        <p className="muted">Flat, fast scan workflow. Favorite your best scans to surface them on Discover.</p>
         <div className="button-row">
           <button onClick={() => void refreshCounts(false)} disabled={refreshingCounts}>
             {refreshingCounts ? "Refreshing..." : "Refresh Counts"}
@@ -310,178 +366,206 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
         {loadingScans ? <p className="muted">Loading scans...</p> : null}
       </section>
 
-      <section className="card ios-card">
-        <h3>Create Custom Scan</h3>
-        <form className="scan-builder" onSubmit={createScan}>
-          <label>
-            Name
-            <input value={name} onChange={(event) => setName(event.target.value)} required />
-          </label>
-          <label>
-            Description
-            <input value={description} onChange={(event) => setDescription(event.target.value)} />
-          </label>
-          <label>
-            Position filter
-            <select value={positionFilter} onChange={(event) => setPositionFilter(event.target.value)}>
-              <option value="">All</option>
-              <option value="C">C</option>
-              <option value="LW">LW</option>
-              <option value="RW">RW</option>
-              <option value="D">D</option>
-              <option value="G">G</option>
-            </select>
-          </label>
+      <section className="card ios-card scans-workbench">
+        <div className="scans-pane scans-builder-pane">
+          <div className="list-head">
+            <h3>Create Custom Scan</h3>
+            <small className="muted">{rules.length} rule{rules.length === 1 ? "" : "s"}</small>
+          </div>
+          <form className="scan-builder flat" onSubmit={createScan}>
+            <label>
+              Name
+              <input value={name} onChange={(event) => setName(event.target.value)} required />
+            </label>
+            <label>
+              Description
+              <input value={description} onChange={(event) => setDescription(event.target.value)} />
+            </label>
+            <label>
+              Position filter
+              <select value={positionFilter} onChange={(event) => setPositionFilter(event.target.value)}>
+                <option value="">All</option>
+                <option value="C">C</option>
+                <option value="LW">LW</option>
+                <option value="RW">RW</option>
+                <option value="D">D</option>
+                <option value="G">G</option>
+              </select>
+            </label>
 
-          <div className="rule-stack">
-            <div className="list-head">
-              <h3>Rules</h3>
-              <button type="button" onClick={addRule}>
-                Add Rule
+            <div className="rules-flat">
+              <div className="list-head">
+                <h3>Rules</h3>
+                <button type="button" onClick={addRule}>
+                  Add Rule
+                </button>
+              </div>
+              {rules.map((rule, index) => (
+                <div key={index} className="rule-row flat">
+                  <label>
+                    Stat
+                    <select value={rule.stat} onChange={(event) => updateRule(index, { stat: event.target.value })}>
+                      {STAT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Comparator
+                    <select
+                      value={rule.comparator}
+                      onChange={(event) => updateRule(index, { comparator: event.target.value })}
+                    >
+                      {COMPARATOR_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Value
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={rule.value}
+                      onChange={(event) => updateRule(index, { value: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label>
+                    Window
+                    <select value={rule.window} onChange={(event) => updateRule(index, { window: event.target.value })}>
+                      {WINDOW_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Compare
+                    <select
+                      value={rule.compare_window ?? ""}
+                      onChange={(event) => updateRule(index, { compare_window: event.target.value || null })}
+                    >
+                      <option value="">None</option>
+                      {WINDOW_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" className="danger" onClick={() => removeRule(index)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="button-row">
+              <button type="button" onClick={() => void previewScan()} disabled={previewing}>
+                {previewing ? "Previewing..." : "Preview"}
+              </button>
+              <button className="primary" type="submit" disabled={saving}>
+                {saving ? "Saving..." : "Save Scan"}
               </button>
             </div>
-            {rules.map((rule, index) => (
-              <div key={index} className="rule-row">
-                <label>
-                  Stat
-                  <select value={rule.stat} onChange={(event) => updateRule(index, { stat: event.target.value })}>
-                    {STAT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Comparator
-                  <select
-                    value={rule.comparator}
-                    onChange={(event) => updateRule(index, { comparator: event.target.value })}
+          </form>
+        </div>
+
+        <div className="scans-pane scans-list-pane">
+          <div className="list-head">
+            <h3>Scan Library</h3>
+            <small className="muted">{orderedScans.length} scans</small>
+          </div>
+          <div className="scan-list flat">
+            {orderedScans.map((scan) => (
+              <article
+                key={scan.id}
+                className={`scan-card flat ${selectedScanId === scan.id ? "active" : ""}`}
+                onClick={() => setSelectedScanId(scan.id)}
+              >
+                <div className="scan-card-head">
+                  <strong>{scan.name}</strong>
+                  <div className="scan-card-head-actions">
+                    <span className="badge">{scan.match_count} matches</span>
+                    <button
+                      className={`icon-fav ${scan.is_followed ? "active" : ""}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void toggleFavorite(scan);
+                      }}
+                      aria-label={scan.is_followed ? "Unfavorite scan" : "Favorite scan"}
+                      title={scan.is_followed ? "Unfavorite scan" : "Favorite scan"}
+                    >
+                      {scan.is_followed ? "★" : "☆"}
+                    </button>
+                  </div>
+                </div>
+                <p className="muted compact">{scan.description}</p>
+                <div className="badge-row">
+                  <span className="badge">{scan.is_preset ? "Preset" : "Custom"}</span>
+                  {scan.position_filter ? <span className="badge">{scan.position_filter}</span> : null}
+                  {scan.is_hidden ? <span className="badge">Hidden</span> : null}
+                  {scan.is_followed ? <span className="badge">Favorited</span> : null}
+                  {scan.alerts_enabled ? <span className="badge">Alerts On</span> : null}
+                </div>
+                <ul className="simple-list">
+                  {scan.rules.map((rule) => (
+                    <li key={rule.id ?? `${rule.stat}-${rule.window}-${rule.value}`}>{formatRule(rule)}</li>
+                  ))}
+                </ul>
+                <p className="muted compact">
+                  Last evaluated: {scan.last_evaluated ? new Date(scan.last_evaluated).toLocaleString() : "never"}
+                </p>
+                <div className="button-row">
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void evaluateScan(scan.id);
+                    }}
                   >
-                    {COMPARATOR_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Value
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={rule.value}
-                    onChange={(event) => updateRule(index, { value: Number(event.target.value) })}
-                  />
-                </label>
-                <label>
-                  Window
-                  <select value={rule.window} onChange={(event) => updateRule(index, { window: event.target.value })}>
-                    {WINDOW_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Compare window
-                  <select
-                    value={rule.compare_window ?? ""}
-                    onChange={(event) => updateRule(index, { compare_window: event.target.value || null })}
+                    Evaluate
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void toggleAlerts(scan);
+                    }}
                   >
-                    <option value="">None</option>
-                    {WINDOW_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="button" className="danger" onClick={() => removeRule(index)}>
-                  Remove
-                </button>
-              </div>
+                    {scan.alerts_enabled ? "Disable Alerts" : "Enable Alerts"}
+                  </button>
+                  {scan.is_preset ? (
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void togglePresetHidden(scan);
+                      }}
+                    >
+                      {scan.is_hidden ? "Unhide" : "Hide"}
+                    </button>
+                  ) : (
+                    <button
+                      className="danger"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteScan(scan.id);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </article>
             ))}
           </div>
-
-          <div className="button-row">
-            <button type="button" onClick={() => void previewScan()} disabled={previewing}>
-              {previewing ? "Previewing..." : "Preview"}
-            </button>
-            <button className="primary" type="submit" disabled={saving}>
-              {saving ? "Saving..." : "Save Scan"}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="card ios-card">
-        <div className="list-head">
-          <h3>My Scans</h3>
-          <small className="muted">Tap evaluate to populate the result panel.</small>
-        </div>
-        <div className="scan-list">
-          {scans.map((scan) => (
-            <article
-              key={scan.id}
-              className={`scan-card ${selectedScanId === scan.id ? "active" : ""}`}
-              onClick={() => setSelectedScanId(scan.id)}
-            >
-              <div className="list-head">
-                <strong>{scan.name}</strong>
-                <span className="badge">{scan.match_count} matches</span>
-              </div>
-              <p className="muted compact">{scan.description}</p>
-              <div className="badge-row">
-                <span className="badge">{scan.is_preset ? "Preset" : "Custom"}</span>
-                {scan.position_filter ? <span className="badge">{scan.position_filter}</span> : null}
-                {scan.is_hidden ? <span className="badge">Hidden</span> : null}
-              </div>
-              <ul className="simple-list">
-                {scan.rules.map((rule) => (
-                  <li key={rule.id ?? `${rule.stat}-${rule.window}-${rule.value}`}>{formatRule(rule)}</li>
-                ))}
-              </ul>
-              <p className="muted compact">
-                Last evaluated: {scan.last_evaluated ? new Date(scan.last_evaluated).toLocaleString() : "never"}
-              </p>
-              <div className="button-row">
-                <button
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void evaluateScan(scan.id);
-                  }}
-                >
-                  Evaluate
-                </button>
-                {scan.is_preset ? (
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void togglePresetHidden(scan);
-                    }}
-                  >
-                    {scan.is_hidden ? "Unhide" : "Hide"}
-                  </button>
-                ) : (
-                  <button
-                    className="danger"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void deleteScan(scan.id);
-                    }}
-                  >
-                    Delete
-                  </button>
-                )}
-              </div>
-            </article>
-          ))}
         </div>
       </section>
 
-      <section className="card ios-card">
+      <section className="card ios-card scans-results">
         <div className="list-head">
           <h3>
             {selectedScan ? selectedScan.name : "Scan Results"}
@@ -507,8 +591,18 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                   background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
                 };
                 return (
-                  <Link key={player.id} to={`/players/${player.id}`} className="player-row">
-                    <PlayerAvatar playerId={player.id} name={player.name} />
+                  <Link
+                    key={player.id}
+                    to={`/players/${player.id}`}
+                    className="player-row"
+                    style={teamCardStyle(player.team)}
+                  >
+                    <PlayerAvatar
+                      playerId={player.id}
+                      externalId={player.external_id}
+                      headshotUrl={player.headshot_url}
+                      name={player.name}
+                    />
                     <div className="player-main">
                       <strong>{player.name}</strong>
                       <p className="muted compact">
@@ -516,7 +610,7 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                           <TeamLogo team={player.team} />
                           {player.team}
                         </span>{" "}
-                        <span className="badge-pos">{player.position}</span> • {player.ownership_percentage.toFixed(1)}% owned
+                        <span className="badge-pos">{player.position}</span>
                       </p>
                     </div>
                     <div className="score-ring" style={ringStyle}>
@@ -539,8 +633,18 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                   background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
                 };
                 return (
-                  <Link key={player.id} to={`/players/${player.id}`} className="player-row">
-                    <PlayerAvatar playerId={player.id} name={player.name} />
+                  <Link
+                    key={player.id}
+                    to={`/players/${player.id}`}
+                    className="player-row"
+                    style={teamCardStyle(player.team)}
+                  >
+                    <PlayerAvatar
+                      playerId={player.id}
+                      externalId={player.external_id}
+                      headshotUrl={player.headshot_url}
+                      name={player.name}
+                    />
                     <div className="player-main">
                       <strong>{player.name}</strong>
                       <p className="muted compact">
@@ -548,7 +652,7 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                           <TeamLogo team={player.team} />
                           {player.team}
                         </span>{" "}
-                        <span className="badge-pos">{player.position}</span> • {player.ownership_percentage.toFixed(1)}% owned
+                        <span className="badge-pos">{player.position}</span>
                       </p>
                     </div>
                     <div className="score-ring" style={ringStyle}>

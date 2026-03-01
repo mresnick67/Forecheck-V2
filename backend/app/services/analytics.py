@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 from datetime import datetime
 import logging
 from sqlalchemy.orm import Session
@@ -6,6 +6,10 @@ from sqlalchemy import desc
 
 from app.models.player import Player, PlayerGameStats, PlayerRollingStats
 from app.services.season import current_season_id, current_game_type
+from app.services.streamer_score_config import (
+    get_default_streamer_score_config,
+    get_streamer_score_config,
+)
 
 
 class AnalyticsService:
@@ -17,6 +21,83 @@ class AnalyticsService:
     }
 
     logger = logging.getLogger(__name__)
+    LEAGUE_STAT_ALIASES = {
+        "g": "goals",
+        "goals": "goals",
+        "a": "assists",
+        "assists": "assists",
+        "pts": "points",
+        "point": "points",
+        "points": "points",
+        "+/-": "plus_minus",
+        "plus_minus": "plus_minus",
+        "plusminus": "plus_minus",
+        "pim": "pim",
+        "ppp": "power_play_points",
+        "power_play_points": "power_play_points",
+        "powerplaypoints": "power_play_points",
+        "shp": "shorthanded_points",
+        "shorthanded_points": "shorthanded_points",
+        "sog": "shots",
+        "shots": "shots",
+        "shot": "shots",
+        "hits": "hits",
+        "hit": "hits",
+        "blk": "blocks",
+        "blocks": "blocks",
+        "block": "blocks",
+        "toi": "time_on_ice",
+        "time_on_ice": "time_on_ice",
+        "w": "wins",
+        "wins": "wins",
+        "sv%": "save_percentage",
+        "sv_pct": "save_percentage",
+        "save_percentage": "save_percentage",
+        "gaa": "goals_against_average",
+        "goals_against_average": "goals_against_average",
+        "sv": "saves",
+        "saves": "saves",
+        "sa": "shots_against",
+        "shots_against": "shots_against",
+        "ga": "goals_against",
+        "goals_against": "goals_against",
+        "sho": "shutouts",
+        "shutout": "shutouts",
+        "shutouts": "shutouts",
+        "gs": "starts",
+        "starts": "starts",
+        "goalie_starts": "starts",
+        "goalie_games_started": "starts",
+    }
+    LEAGUE_LOWER_BETTER_STATS = {"goals_against_average", "goals_against"}
+    LEAGUE_MIN_VALUES = {
+        "plus_minus": -2.0,
+        "save_percentage": 0.84,
+        "goals_against_average": 1.2,
+    }
+    LEAGUE_SKATER_CAP_DEFAULTS = {
+        "goals": 0.9,
+        "assists": 1.0,
+        "points": 1.8,
+        "shots": 4.8,
+        "hits": 4.0,
+        "blocks": 3.2,
+        "plus_minus": 2.0,
+        "pim": 2.5,
+        "power_play_points": 0.9,
+        "shorthanded_points": 0.2,
+        "time_on_ice": 25.0,
+    }
+    LEAGUE_GOALIE_CAP_DEFAULTS = {
+        "wins": 1.0,
+        "save_percentage": 0.94,
+        "goals_against_average": 5.0,
+        "saves": 40.0,
+        "shots_against": 44.0,
+        "goals_against": 5.0,
+        "shutouts": 0.3,
+        "starts": 1.0,
+    }
 
     @staticmethod
     def compute_rolling_stats(
@@ -25,10 +106,13 @@ class AnalyticsService:
         window: str = "L10",
         season_id: Optional[str] = None,
         game_type: Optional[int] = None,
+        score_config: Optional[dict] = None,
+        league_context: Optional[dict[str, Any]] = None,
     ) -> PlayerRollingStats:
         """Compute rolling statistics for a player."""
         season_id = season_id or current_season_id()
         game_type = game_type if game_type is not None else current_game_type()
+        score_config = score_config or get_streamer_score_config(db)
         window_size = AnalyticsService.WINDOW_SIZES.get(window)
 
         # Get game stats sorted by date
@@ -64,6 +148,8 @@ class AnalyticsService:
                 window,
                 season_id,
                 game_type,
+                score_config,
+                league_context=league_context,
             )
         else:
             return AnalyticsService._compute_skater_stats(
@@ -73,6 +159,8 @@ class AnalyticsService:
                 window,
                 season_id,
                 game_type,
+                score_config,
+                league_context=league_context,
             )
 
     @staticmethod
@@ -83,6 +171,8 @@ class AnalyticsService:
         window: str,
         season_id: str,
         game_type: int,
+        score_config: dict,
+        league_context: Optional[dict[str, Any]] = None,
     ) -> PlayerRollingStats:
         gp = len(game_stats)
         gp_float = float(gp)
@@ -126,7 +216,7 @@ class AnalyticsService:
         )
 
         # Calculate streamer score
-        streamer_score = AnalyticsService._calculate_streamer_score(
+        base_streamer_score = AnalyticsService._calculate_streamer_score(
             position=player.position,
             ppg=points_pg,
             spg=shots_pg,
@@ -137,6 +227,27 @@ class AnalyticsService:
             bpg=blocks_pg,
             trend=trend,
             ownership=player.ownership_percentage,
+            score_config=score_config,
+        )
+        streamer_score = AnalyticsService._apply_league_influence(
+            base_streamer_score=base_streamer_score,
+            score_config=score_config,
+            league_context=league_context,
+            games_played=gp,
+            player_position=player.position,
+            metrics={
+                "goals": goals_pg,
+                "assists": assists_pg,
+                "points": points_pg,
+                "shots": shots_pg,
+                "hits": hits_pg,
+                "blocks": blocks_pg,
+                "plus_minus": pm_pg,
+                "pim": pim_pg,
+                "power_play_points": ppp_pg,
+                "shorthanded_points": shp_pg,
+                "time_on_ice": toi_pg,
+            },
         )
 
         # Check if rolling stats exist, update or create
@@ -188,6 +299,8 @@ class AnalyticsService:
         window: str,
         season_id: str,
         game_type: int,
+        score_config: dict,
+        league_context: Optional[dict[str, Any]] = None,
     ) -> PlayerRollingStats:
         played_games = [g for g in game_stats if (g.time_on_ice or 0) > 0]
         games_played = len(played_games)
@@ -211,7 +324,7 @@ class AnalyticsService:
             games_started=games_started,
         )
         expected_games = AnalyticsService.WINDOW_SIZES.get(window) or games_played
-        streamer_score = AnalyticsService._calculate_goalie_streamer_score(
+        base_streamer_score = AnalyticsService._calculate_goalie_streamer_score(
             sv_pct,
             gaa,
             total_wins,
@@ -220,6 +333,24 @@ class AnalyticsService:
             expected_games,
             trend,
             player.ownership_percentage,
+            score_config=score_config,
+        )
+        streamer_score = AnalyticsService._apply_league_influence(
+            base_streamer_score=base_streamer_score,
+            score_config=score_config,
+            league_context=league_context,
+            games_played=games_played,
+            player_position=player.position,
+            metrics={
+                "wins": (total_wins / games_played) if games_played > 0 else 0.0,
+                "save_percentage": sv_pct,
+                "goals_against_average": gaa,
+                "saves": (total_saves / games_played) if games_played > 0 else 0.0,
+                "shots_against": (total_shots_against / games_played) if games_played > 0 else 0.0,
+                "goals_against": (total_goals_against / games_played) if games_played > 0 else 0.0,
+                "shutouts": (total_shutouts / games_played) if games_played > 0 else 0.0,
+                "starts": (games_started / games_played) if games_played > 0 else 0.0,
+            },
         )
 
         stats = PlayerRollingStats(
@@ -450,6 +581,7 @@ class AnalyticsService:
         bpg: float,
         trend: str,
         ownership: float,
+        score_config: Optional[dict] = None,
     ) -> float:
         def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
             return max(min_value, min(value, max_value))
@@ -459,68 +591,63 @@ class AnalyticsService:
                 return 0.0
             return clamp(value / cap) * weight
 
+        config = score_config or get_default_streamer_score_config()
+        skater_cfg = config.get("skater", {})
+        weights = skater_cfg.get("weights", {})
+        caps_cfg = skater_cfg.get("caps", {})
+        toggles = skater_cfg.get("toggles", {})
+        toi_gate_cfg = skater_cfg.get("toi_gate", {})
+
         is_defense = position == "D"
-        if is_defense:
-            weights = {
-                "ppg": 17.0,
-                "spg": 12.0,
-                "ppp": 10.0,
-                "toi": 15.0,
-                "plus_minus": 5.0,
-                "hits_blocks": 10.0,
-            }
-            caps = {
-                "ppg": 1.0,
-                "spg": 2.6,
-                "ppp": 0.6,
-                "toi": 24.0,
-                "hits_blocks": 5.0,
-            }
-        else:
-            weights = {
-                "ppg": 17.0,
-                "spg": 17.0,
-                "ppp": 5.0,
-                "toi": 24.0,
-                "plus_minus": 5.0,
-                "hits_blocks": 5.0,
-            }
-            caps = {
-                "ppg": 1.4,
-                "spg": 3.0,
-                "ppp": 0.5,
-                "toi": 21.0,
-                "hits_blocks": 4.0,
-            }
+        caps = caps_cfg.get("defense" if is_defense else "forward", {})
 
         score = 0.0
-        score += scaled(ppg, caps["ppg"], weights["ppg"])
-        score += scaled(spg, caps["spg"], weights["spg"])
-        score += scaled(ppp_pg, caps["ppp"], weights["ppp"])
-        score += scaled(toi_pg, caps["toi"], weights["toi"])
-        score += scaled(hpg + bpg, caps["hits_blocks"], weights["hits_blocks"])
+        score += scaled(ppg, caps.get("points_per_game", 1.0), weights.get("points_per_game", 0.0))
+        score += scaled(spg, caps.get("shots_per_game", 1.0), weights.get("shots_per_game", 0.0))
+        score += scaled(
+            ppp_pg,
+            caps.get("power_play_points_per_game", 1.0),
+            weights.get("power_play_points_per_game", 0.0),
+        )
+        score += scaled(
+            toi_pg,
+            caps.get("time_on_ice_per_game", 1.0),
+            weights.get("time_on_ice_per_game", 0.0),
+        )
+        if toggles.get("use_hits_blocks", True):
+            score += scaled(
+                hpg + bpg,
+                caps.get("hits_blocks_per_game", 1.0),
+                weights.get("hits_blocks_per_game", 0.0),
+            )
 
-        pm_score = clamp((pm_pg + 1.0) / 2.0)
-        score += pm_score * weights["plus_minus"]
+        if toggles.get("use_plus_minus", True):
+            pm_score = clamp((pm_pg + 1.0) / 2.0)
+            score += pm_score * weights.get("plus_minus_per_game", 0.0)
 
-        if trend == "hot":
-            score += 15.0
-        elif trend == "stable":
-            score += 5.0
+        if toggles.get("use_trend_bonus", True):
+            if trend == "hot":
+                score += weights.get("trend_hot_bonus", 0.0)
+            elif trend == "stable":
+                score += weights.get("trend_stable_bonus", 0.0)
 
-        if is_defense:
-            toi_gate_floor = 16.0
-        else:
-            toi_gate_floor = 14.0
-        toi_gate_range = caps["toi"] - toi_gate_floor
-        if toi_gate_range > 0:
-            toi_gate = clamp((toi_pg - toi_gate_floor) / toi_gate_range)
+        if toggles.get("use_toi_gate_for_availability", True):
+            toi_gate_floor = toi_gate_cfg.get("defense_floor", 16.0) if is_defense else toi_gate_cfg.get(
+                "forward_floor", 14.0
+            )
+            toi_cap = caps.get("time_on_ice_per_game", 1.0)
+            toi_gate_range = toi_cap - toi_gate_floor
+            if toi_gate_range > 0:
+                toi_gate = clamp((toi_pg - toi_gate_floor) / toi_gate_range)
+            else:
+                toi_gate = 1.0
         else:
             toi_gate = 1.0
 
-        availability = clamp((100.0 - ownership) / 100.0) * 14.0
-        availability *= toi_gate
-        score += availability
+        if toggles.get("use_availability_bonus", False):
+            availability = clamp((100.0 - ownership) / 100.0) * weights.get("availability_bonus", 0.0)
+            availability *= toi_gate
+            score += availability
 
         return min(score, 100.0)
 
@@ -534,6 +661,7 @@ class AnalyticsService:
         expected_games: int,
         trend: str,
         ownership: float,
+        score_config: Optional[dict] = None,
     ) -> float:
         def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
             return max(min_value, min(value, max_value))
@@ -541,29 +669,235 @@ class AnalyticsService:
         if gp <= 0:
             return 0.0
 
+        config = score_config or get_default_streamer_score_config()
+        goalie_cfg = config.get("goalie", {})
+        weights = goalie_cfg.get("weights", {})
+        scales = goalie_cfg.get("scales", {})
+        toggles = goalie_cfg.get("toggles", {})
+
         score = 0.0
-        sv_score = clamp((sv_pct - 0.88) / 0.05) * 20.0
-        gaa_score = clamp((3.5 - gaa) / 1.5) * 15.0
+        sv_floor = scales.get("save_percentage_floor", 0.88)
+        sv_range = scales.get("save_percentage_range", 0.05)
+        gaa_ceiling = scales.get("goals_against_average_ceiling", 3.5)
+        gaa_range = scales.get("goals_against_average_range", 1.5)
+
+        sv_score = clamp((sv_pct - sv_floor) / max(sv_range, 0.0001)) * weights.get("save_percentage", 0.0)
+        gaa_score = clamp((gaa_ceiling - gaa) / max(gaa_range, 0.0001)) * weights.get("goals_against_average", 0.0)
         win_rate = wins / gp if gp > 0 else 0.0
-        win_score = clamp(win_rate) * 18.0
+        win_score = clamp(win_rate) * weights.get("wins", 0.0)
         denom_games = expected_games if expected_games and expected_games > 0 else gp
         start_rate = games_started / denom_games if denom_games > 0 else 0.0
-        start_score = clamp(start_rate) * 17.0
+        start_score = clamp(start_rate) * weights.get("starts", 0.0)
 
         score += sv_score + gaa_score + win_score + start_score
 
-        if trend == "hot":
-            score += 15.0
-        elif trend == "stable":
-            score += 5.0
+        if toggles.get("use_trend_bonus", True):
+            if trend == "hot":
+                score += weights.get("trend_hot_bonus", 0.0)
+            elif trend == "stable":
+                score += weights.get("trend_stable_bonus", 0.0)
 
-        availability = clamp((100.0 - ownership) / 100.0) * 10.0
-        score += availability
+        if toggles.get("use_availability_bonus", False):
+            availability = clamp((100.0 - ownership) / 100.0) * weights.get("availability_bonus", 0.0)
+            score += availability
 
-        sample_factor = 0.7 if gp <= 1 else 1.0
+        sample_factor = 0.7 if toggles.get("use_sample_penalty", True) and gp <= 1 else 1.0
 
         score *= sample_factor
         return min(score, 100.0)
+
+    @staticmethod
+    def _active_league_context(db: Session) -> Optional[dict[str, Any]]:
+        from app.models.league import League
+
+        league = (
+            db.query(League)
+            .filter(League.is_active == True)
+            .order_by(League.updated_at.desc(), League.created_at.desc())
+            .first()
+        )
+        if not league:
+            return None
+        if not isinstance(league.scoring_weights, dict) or not league.scoring_weights:
+            return None
+        return {
+            "league_id": league.id,
+            "league_type": (league.league_type or "categories").lower(),
+            "scoring_weights": league.scoring_weights,
+        }
+
+    @staticmethod
+    def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+        return max(min_value, min(value, max_value))
+
+    @staticmethod
+    def _normalized_league_stat(stat_key: str) -> Optional[str]:
+        normalized = stat_key.strip().lower()
+        normalized = normalized.replace(" ", "_")
+        return AnalyticsService.LEAGUE_STAT_ALIASES.get(normalized)
+
+    @staticmethod
+    def _league_cap_map(position: str, score_config: dict) -> dict[str, float]:
+        is_goalie = position == "G"
+        if is_goalie:
+            goalie_cfg = score_config.get("goalie", {})
+            scales = goalie_cfg.get("scales", {})
+            save_floor = float(scales.get("save_percentage_floor", 0.88))
+            save_range = float(scales.get("save_percentage_range", 0.05))
+            gaa_ceiling = float(scales.get("goals_against_average_ceiling", 3.5))
+            caps = dict(AnalyticsService.LEAGUE_GOALIE_CAP_DEFAULTS)
+            caps["save_percentage"] = save_floor + save_range
+            caps["goals_against_average"] = max(gaa_ceiling, 0.1)
+            return caps
+
+        skater_cfg = score_config.get("skater", {})
+        caps_cfg = skater_cfg.get("caps", {})
+        skater_caps = caps_cfg.get("defense" if position == "D" else "forward", {})
+        caps = dict(AnalyticsService.LEAGUE_SKATER_CAP_DEFAULTS)
+        caps["points"] = float(skater_caps.get("points_per_game", caps["points"]))
+        caps["shots"] = float(skater_caps.get("shots_per_game", caps["shots"]))
+        caps["power_play_points"] = float(
+            skater_caps.get("power_play_points_per_game", caps["power_play_points"])
+        )
+        caps["time_on_ice"] = float(skater_caps.get("time_on_ice_per_game", caps["time_on_ice"]))
+        # Split combined hits+blocks cap into per-stat guidance.
+        hits_blocks_cap = float(skater_caps.get("hits_blocks_per_game", 6.0))
+        caps["hits"] = max(1.0, hits_blocks_cap * 0.6)
+        caps["blocks"] = max(1.0, hits_blocks_cap * 0.5)
+        return caps
+
+    @staticmethod
+    def _league_fit_score_categories(
+        scoring_weights: dict[str, Any],
+        metrics: dict[str, float],
+        cap_map: dict[str, float],
+    ) -> Optional[float]:
+        weighted_sum = 0.0
+        total_weight = 0.0
+
+        for raw_stat, raw_weight in scoring_weights.items():
+            stat = AnalyticsService._normalized_league_stat(str(raw_stat))
+            if not stat or stat not in metrics:
+                continue
+            weight = float(raw_weight)
+            abs_weight = abs(weight)
+            if abs_weight <= 0:
+                continue
+            value = float(metrics.get(stat, 0.0))
+            cap = max(0.01, float(cap_map.get(stat, 1.0)))
+
+            if stat in AnalyticsService.LEAGUE_LOWER_BETTER_STATS:
+                ratio = AnalyticsService._clamp((cap - value) / cap)
+            else:
+                ratio = AnalyticsService._clamp(value / cap)
+
+            if weight < 0:
+                ratio = 1.0 - ratio
+
+            weighted_sum += ratio * abs_weight
+            total_weight += abs_weight
+
+        if total_weight <= 0:
+            return None
+        return AnalyticsService._clamp(weighted_sum / total_weight) * 100.0
+
+    @staticmethod
+    def _league_fit_score_points(
+        scoring_weights: dict[str, Any],
+        metrics: dict[str, float],
+        cap_map: dict[str, float],
+    ) -> Optional[float]:
+        total_points = 0.0
+        min_points = 0.0
+        max_points = 0.0
+        used = 0
+
+        for raw_stat, raw_weight in scoring_weights.items():
+            stat = AnalyticsService._normalized_league_stat(str(raw_stat))
+            if not stat or stat not in metrics:
+                continue
+            weight = float(raw_weight)
+            if weight == 0:
+                continue
+            used += 1
+            max_value = float(cap_map.get(stat, 1.0))
+            min_value = float(AnalyticsService.LEAGUE_MIN_VALUES.get(stat, 0.0))
+            if max_value < min_value:
+                max_value, min_value = min_value, max_value
+
+            value = float(metrics.get(stat, 0.0))
+            clamped_value = max(min_value, min(value, max_value))
+            total_points += clamped_value * weight
+
+            if weight >= 0:
+                max_points += max_value * weight
+                min_points += min_value * weight
+            else:
+                max_points += min_value * weight
+                min_points += max_value * weight
+
+        if used == 0:
+            return None
+        span = max_points - min_points
+        if span <= 0:
+            return None
+        normalized = (total_points - min_points) / span
+        return AnalyticsService._clamp(normalized) * 100.0
+
+    @staticmethod
+    def _calculate_league_fit_score(
+        league_context: dict[str, Any],
+        position: str,
+        metrics: dict[str, float],
+        score_config: dict[str, Any],
+    ) -> Optional[float]:
+        scoring_weights = league_context.get("scoring_weights")
+        if not isinstance(scoring_weights, dict) or not scoring_weights:
+            return None
+
+        league_type = str(league_context.get("league_type") or "categories").lower()
+        cap_map = AnalyticsService._league_cap_map(position, score_config)
+        if league_type == "points":
+            return AnalyticsService._league_fit_score_points(scoring_weights, metrics, cap_map)
+        return AnalyticsService._league_fit_score_categories(scoring_weights, metrics, cap_map)
+
+    @staticmethod
+    def _apply_league_influence(
+        base_streamer_score: float,
+        score_config: dict[str, Any],
+        league_context: Optional[dict[str, Any]],
+        games_played: int,
+        player_position: str,
+        metrics: dict[str, float],
+    ) -> float:
+        league_cfg = score_config.get("league_influence", {})
+        if not league_cfg.get("enabled", True):
+            return base_streamer_score
+        if not league_context:
+            return base_streamer_score
+
+        blend_weight = AnalyticsService._clamp(float(league_cfg.get("weight", 0.35)))
+        if blend_weight <= 0:
+            return base_streamer_score
+
+        min_games = int(max(0, float(league_cfg.get("minimum_games", 3))))
+        if min_games > 0 and games_played < min_games:
+            blend_weight *= AnalyticsService._clamp(games_played / min_games)
+
+        if blend_weight <= 0:
+            return base_streamer_score
+
+        league_fit = AnalyticsService._calculate_league_fit_score(
+            league_context=league_context,
+            position=player_position,
+            metrics=metrics,
+            score_config=score_config,
+        )
+        if league_fit is None:
+            return base_streamer_score
+
+        blended = ((1.0 - blend_weight) * base_streamer_score) + (blend_weight * league_fit)
+        return AnalyticsService._clamp(blended, 0.0, 100.0)
 
     @staticmethod
     def _empty_rolling_stats(
@@ -590,10 +924,17 @@ class AnalyticsService:
         )
 
     @staticmethod
-    def update_all_rolling_stats(db: Session) -> int:
+    def update_all_rolling_stats(
+        db: Session,
+        score_config: Optional[dict] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_every: int = 25,
+    ) -> int:
         """Update rolling stats for all players. Returns count updated."""
         season_id = current_season_id()
         game_type = current_game_type()
+        score_config = score_config or get_streamer_score_config(db)
+        league_context = AnalyticsService._active_league_context(db)
         players = db.query(Player).filter(Player.is_active == True).all()
         count = 0
         total_players = len(players)
@@ -615,6 +956,8 @@ class AnalyticsService:
                     window,
                     season_id=season_id,
                     game_type=game_type,
+                    score_config=score_config,
+                    league_context=league_context,
                 )
 
                 # Update or insert
@@ -643,6 +986,9 @@ class AnalyticsService:
                 player.current_streamer_score = l5_streamer_score
             elif season_streamer_score is not None:
                 player.current_streamer_score = season_streamer_score
+
+            if progress_callback and (idx % progress_every == 0 or idx == total_players):
+                progress_callback(idx, total_players)
 
             if idx % 50 == 0 or idx == total_players:
                 AnalyticsService.logger.info(

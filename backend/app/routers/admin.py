@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta, timezone
+import threading
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.player import Player, PlayerGameStats
 from app.models.scan import Scan
 from app.models.sync_run import SyncCheckpoint, SyncRun
@@ -23,12 +26,43 @@ from app.services.nhl_sync import (
 )
 from app.services.scan_evaluator import ScanEvaluatorService
 from app.services.season import current_season_id
+from app.services.streamer_score_config import (
+    get_streamer_score_config,
+    save_streamer_score_config,
+)
 from app.services.week_schedule import update_current_week_schedule
 from app.services.yahoo_oauth_service import has_yahoo_credentials
 from app.services.yahoo_service import update_player_ownership
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 settings = get_settings()
+
+STREAMER_RECALC_JOB = "streamer_recalc"
+_STREAMER_RECALC_LOCK = threading.Lock()
+_STREAMER_RECALC_PROGRESS: dict[str, Any] = {
+    "running": False,
+    "status": "idle",
+    "run_id": None,
+    "processed_players": 0,
+    "total_players": 0,
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+}
+
+
+class StreamerScoreConfigPayload(BaseModel):
+    config: dict[str, Any]
+
+
+def _progress_snapshot() -> dict[str, Any]:
+    with _STREAMER_RECALC_LOCK:
+        return dict(_STREAMER_RECALC_PROGRESS)
+
+
+def _progress_update(**fields: Any) -> None:
+    with _STREAMER_RECALC_LOCK:
+        _STREAMER_RECALC_PROGRESS.update(fields)
 
 
 def require_admin_user(current_user: User = Depends(get_current_user)) -> User:
@@ -58,6 +92,68 @@ def _refresh_scan_counts(db: Session, stale_minutes: int = 30, force: bool = Fal
     )
 
 
+def _run_streamer_recalculation(run_id: str) -> None:
+    db = SessionLocal()
+    try:
+        total_players = db.query(Player).filter(Player.is_active == True).count()
+        _progress_update(
+            status="running",
+            total_players=total_players,
+            processed_players=0,
+            error=None,
+        )
+
+        score_config = get_streamer_score_config(db)
+
+        def on_progress(processed_players: int, total: int) -> None:
+            _progress_update(
+                status="running",
+                processed_players=processed_players,
+                total_players=total,
+            )
+
+        updated_rows = AnalyticsService.update_all_rolling_stats(
+            db,
+            score_config=score_config,
+            progress_callback=on_progress,
+            progress_every=20,
+        )
+        _set_sync_state(db, "rolling_stats")
+
+        run = db.query(SyncRun).filter(SyncRun.id == run_id).first()
+        if run:
+            run.status = "success"
+            run.row_count = updated_rows
+            run.finished_at = datetime.now(timezone.utc)
+            db.add(run)
+            db.commit()
+
+        _progress_update(
+            running=False,
+            status="success",
+            processed_players=total_players,
+            total_players=total_players,
+            finished_at=datetime.now(timezone.utc),
+            error=None,
+        )
+    except Exception as exc:
+        run = db.query(SyncRun).filter(SyncRun.id == run_id).first()
+        if run:
+            run.status = "failed"
+            run.error = str(exc)[:500]
+            run.finished_at = datetime.now(timezone.utc)
+            db.add(run)
+            db.commit()
+        _progress_update(
+            running=False,
+            status="failed",
+            finished_at=datetime.now(timezone.utc),
+            error=str(exc)[:500],
+        )
+    finally:
+        db.close()
+
+
 @router.get("")
 def admin_root(_: User = Depends(require_admin_user)):
     return {
@@ -71,6 +167,8 @@ def admin_root(_: User = Depends(require_admin_user)):
             "/admin/sync/weekly-schedule",
             "/admin/sync/ownership",
             "/admin/sync/pipeline",
+            "/admin/streamer-score/config",
+            "/admin/streamer-score/recalculate",
         ],
     }
 
@@ -133,6 +231,71 @@ def admin_status(
         "yahoo_connected": settings.yahoo_enabled and has_yahoo_credentials(yahoo_user),
         "server_time_utc": datetime.now(timezone.utc),
     }
+
+
+@router.get("/streamer-score/config")
+def get_streamer_score_settings(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
+):
+    return {"config": get_streamer_score_config(db)}
+
+
+@router.put("/streamer-score/config")
+def update_streamer_score_settings(
+    payload: StreamerScoreConfigPayload,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
+):
+    config = save_streamer_score_config(db, payload.config)
+    return {"config": config}
+
+
+@router.get("/streamer-score/recalculate")
+def get_streamer_score_recalculate_progress(_: User = Depends(require_admin_user)):
+    return _progress_snapshot()
+
+
+@router.post("/streamer-score/recalculate")
+def start_streamer_score_recalculate(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin_user),
+):
+    current = _progress_snapshot()
+    if current.get("running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Streamer score recalculation already running",
+        )
+
+    run = SyncRun(
+        job=STREAMER_RECALC_JOB,
+        status="running",
+        started_at=datetime.now(timezone.utc),
+        row_count=0,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    _progress_update(
+        running=True,
+        status="starting",
+        run_id=run.id,
+        processed_players=0,
+        total_players=0,
+        started_at=run.started_at,
+        finished_at=None,
+        error=None,
+    )
+
+    thread = threading.Thread(
+        target=_run_streamer_recalculation,
+        args=(run.id,),
+        daemon=True,
+    )
+    thread.start()
+    return _progress_snapshot()
 
 
 @router.post("/player/refresh")

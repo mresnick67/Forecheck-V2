@@ -26,6 +26,7 @@ class StatWindow(str, Enum):
 
 
 class PlayerBase(BaseModel):
+    external_id: Optional[str] = None
     name: str
     team: str
     position: str
@@ -34,25 +35,22 @@ class PlayerBase(BaseModel):
 
 
 class PlayerCreate(PlayerBase):
-    external_id: Optional[str] = None
     current_streamer_score: float = 0.0
-    ownership_percentage: float = 0.0
 
 
 class PlayerUpdate(BaseModel):
+    external_id: Optional[str] = None
     name: Optional[str] = None
     team: Optional[str] = None
     position: Optional[str] = None
     number: Optional[int] = None
     headshot_url: Optional[str] = None
     current_streamer_score: Optional[float] = None
-    ownership_percentage: Optional[float] = None
 
 
 class Player(PlayerBase):
     id: str
     current_streamer_score: float
-    ownership_percentage: float
     is_active: bool
     created_at: datetime
     weekly_games: Optional[int] = None

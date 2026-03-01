@@ -2,7 +2,7 @@ import { CSSProperties, FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { publicRequest } from "../api";
-import { PlayerAvatar, TeamLogo } from "../components/NhlAssets";
+import { PlayerAvatar, TeamLogo, teamCardStyle } from "../components/NhlAssets";
 import type { ExplorePlayer } from "../types";
 
 const WINDOWS = ["L5", "L10", "L20", "Season"] as const;
@@ -28,7 +28,6 @@ export default function ExplorePage() {
   const [sortBy, setSortBy] = useState("window_streamer_score");
   const [sortOrder, setSortOrder] = useState("desc");
   const [minScore, setMinScore] = useState("35");
-  const [maxOwned, setMaxOwned] = useState("85");
   const [minGames, setMinGames] = useState("3");
   const [minWeeklyGames, setMinWeeklyGames] = useState("0");
   const [minLightGames, setMinLightGames] = useState("0");
@@ -49,7 +48,6 @@ export default function ExplorePage() {
       if (position !== "ALL") params.set("position", position);
 
       if (minScore.trim()) params.set("min_streamer_score", minScore.trim());
-      if (maxOwned.trim()) params.set("max_ownership", maxOwned.trim());
       if (minGames.trim()) params.set("min_games_played", minGames.trim());
       if (minWeeklyGames.trim()) params.set("min_weekly_games", minWeeklyGames.trim());
       if (minLightGames.trim()) params.set("min_weekly_light_games", minLightGames.trim());
@@ -79,7 +77,6 @@ export default function ExplorePage() {
     setSortBy("window_streamer_score");
     setSortOrder("desc");
     setMinScore("35");
-    setMaxOwned("85");
     setMinGames("3");
     setMinWeeklyGames("0");
     setMinLightGames("0");
@@ -147,7 +144,6 @@ export default function ExplorePage() {
               <option value="save_pct">Save %</option>
               <option value="gaa">GAA</option>
               <option value="wins">Goalie Wins</option>
-              <option value="ownership">Ownership %</option>
               <option value="weekly_games">Weekly Games</option>
               <option value="weekly_light_games">Light-Night Games</option>
               <option value="name">Name</option>
@@ -165,11 +161,6 @@ export default function ExplorePage() {
           <label>
             Min score
             <input value={minScore} onChange={(event) => setMinScore(event.target.value)} />
-          </label>
-
-          <label>
-            Max owned %
-            <input value={maxOwned} onChange={(event) => setMaxOwned(event.target.value)} />
           </label>
 
           <label>
@@ -216,8 +207,18 @@ export default function ExplorePage() {
             };
 
             return (
-              <Link key={player.id} to={`/players/${player.id}`} className="player-row">
-                <PlayerAvatar playerId={player.id} name={player.name} />
+              <Link
+                key={player.id}
+                to={`/players/${player.id}`}
+                className="player-row"
+                style={teamCardStyle(player.team)}
+              >
+                <PlayerAvatar
+                  playerId={player.id}
+                  externalId={player.external_id}
+                  headshotUrl={player.headshot_url}
+                  name={player.name}
+                />
                 <div className="player-main">
                   <div className="player-row-top">
                     <strong>{player.name}</strong>
@@ -227,8 +228,7 @@ export default function ExplorePage() {
                       <TeamLogo team={player.team} />
                       {player.team}
                     </span>{" "}
-                    <span className="badge-pos">{player.position}</span> •{" "}
-                    {player.ownership_percentage.toFixed(1)}% owned • {player.games_played} GP
+                    <span className="badge-pos">{player.position}</span> • {player.games_played} GP
                   </p>
                   {player.position === "G" ? (
                     <p className="metric-line">

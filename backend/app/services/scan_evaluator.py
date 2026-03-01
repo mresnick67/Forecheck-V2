@@ -8,6 +8,7 @@ from sqlalchemy import func, and_, cast, Float
 from app.models.player import Player, PlayerRollingStats
 from app.models.game import Game
 from app.models.scan import Scan, ScanRule
+from app.models.scan_alert import ScanAlertState, ScanRun
 from app.services.analytics import AnalyticsService
 from app.services.season import current_season_id, current_game_type
 
@@ -527,10 +528,77 @@ class ScanEvaluatorService:
             if not force and not is_stale:
                 continue
 
-            scan.match_count = len(ScanEvaluatorService.evaluate(db, scan))
-            scan.last_evaluated = now
+            results = ScanEvaluatorService.evaluate(db, scan)
+            ScanEvaluatorService.record_scan_results(
+                db,
+                scan=scan,
+                matched_players=results,
+                run_at=now,
+                commit=False,
+            )
             updated += 1
 
         if updated:
             db.commit()
         return updated
+
+    @staticmethod
+    def record_scan_results(
+        db: Session,
+        scan: Scan,
+        matched_players: List[Player],
+        run_at: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> dict[str, int]:
+        now = run_at or datetime.utcnow()
+        matched_ids = {player.id for player in matched_players}
+        state_rows = db.query(ScanAlertState).filter(ScanAlertState.scan_id == scan.id).all()
+        state_by_player = {row.player_id: row for row in state_rows}
+        previous_ids = {row.player_id for row in state_rows if row.is_current_match}
+
+        new_ids = matched_ids - previous_ids
+        dropped_ids = previous_ids - matched_ids
+        staying_ids = matched_ids & previous_ids
+
+        for player_id in new_ids:
+            state = state_by_player.get(player_id)
+            if not state:
+                state = ScanAlertState(scan_id=scan.id, player_id=player_id)
+                state_by_player[player_id] = state
+                db.add(state)
+            state.is_current_match = True
+            state.last_matched_at = now
+            state.last_notified_at = now
+
+        for player_id in staying_ids:
+            state = state_by_player.get(player_id)
+            if not state:
+                continue
+            state.is_current_match = True
+            state.last_matched_at = now
+
+        for player_id in dropped_ids:
+            state = state_by_player.get(player_id)
+            if not state:
+                continue
+            state.is_current_match = False
+
+        scan.last_evaluated = now
+        scan.match_count = len(matched_ids)
+
+        db.add(
+            ScanRun(
+                scan_id=scan.id,
+                run_at=now,
+                match_count=len(matched_ids),
+            )
+        )
+
+        if commit:
+            db.commit()
+
+        return {
+            "match_count": len(matched_ids),
+            "new_count": len(new_ids),
+            "dropped_count": len(dropped_ids),
+        }

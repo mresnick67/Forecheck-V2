@@ -1,14 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 from app.database import get_db
 from app.routers.auth import get_current_user, get_current_user_optional
 from app.models.user import User as UserModel
 from app.models.scan import Scan as ScanModel, ScanRule as ScanRuleModel, ScanPreference
+from app.models.scan_alert import ScanAlertState
 from app.models.player import Player as PlayerModel
+from app.schemas.alert import ScanAlertFeedItem, ScanAlertSummaryItem
 from app.schemas.scan import Scan, ScanCreate, ScanUpdate, ScanRule, ScanPreview
 from app.schemas.player import Player
 from app.services.scan_evaluator import ScanEvaluatorService
@@ -206,6 +209,35 @@ def _refresh_scan_match_counts(
     )
 
 
+def _alerts_enabled_scan_map(
+    db: Session,
+    current_user: UserModel,
+) -> dict[str, ScanModel]:
+    scans = _build_scan_query(db, current_user, include_presets=True).all()
+    if not scans:
+        return {}
+
+    preset_ids = [scan.id for scan in scans if scan.is_preset]
+    pref_map: dict[str, ScanPreference] = {}
+    if preset_ids:
+        prefs = db.query(ScanPreference).filter(
+            ScanPreference.user_id == current_user.id,
+            ScanPreference.scan_id.in_(preset_ids),
+        ).all()
+        pref_map = {pref.scan_id: pref for pref in prefs}
+
+    enabled: dict[str, ScanModel] = {}
+    for scan in scans:
+        is_enabled = bool(scan.alerts_enabled)
+        if scan.is_preset:
+            pref = pref_map.get(scan.id)
+            if pref is not None:
+                is_enabled = bool(pref.alerts_enabled)
+        if is_enabled:
+            enabled[scan.id] = scan
+    return enabled
+
+
 @router.get("", response_model=List[Scan])
 async def get_scans(
     db: Session = Depends(get_db),
@@ -308,6 +340,97 @@ async def refresh_scan_counts(
     scans = _attach_scan_preferences(db, scans, current_user, include_hidden)
     _refresh_scan_match_counts(db, scans, stale_minutes=stale_minutes, force=force)
     return scans
+
+
+@router.get("/alerts/feed", response_model=List[ScanAlertFeedItem])
+async def get_scan_alert_feed(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(60, ge=1, le=300),
+):
+    """Get newly-entered scan matches for scans with alerts enabled."""
+    ensure_preset_scans(db)
+    enabled_map = _alerts_enabled_scan_map(db, current_user)
+    if not enabled_map:
+        return []
+
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    rows = (
+        db.query(ScanAlertState, PlayerModel)
+        .join(PlayerModel, PlayerModel.id == ScanAlertState.player_id)
+        .filter(
+            ScanAlertState.scan_id.in_(list(enabled_map.keys())),
+            ScanAlertState.is_current_match == True,
+            ScanAlertState.last_notified_at.isnot(None),
+            ScanAlertState.last_notified_at >= cutoff,
+        )
+        .order_by(ScanAlertState.last_notified_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    feed: list[ScanAlertFeedItem] = []
+    for state, player in rows:
+        scan = enabled_map.get(state.scan_id)
+        if not scan or state.last_notified_at is None:
+            continue
+        feed.append(
+            ScanAlertFeedItem(
+                scan_id=state.scan_id,
+                scan_name=scan.name,
+                player_id=player.id,
+                player_name=player.name,
+                team=player.team,
+                position=player.position,
+                headshot_url=player.headshot_url,
+                current_streamer_score=player.current_streamer_score,
+                detected_at=state.last_notified_at,
+            )
+        )
+    return feed
+
+
+@router.get("/alerts/summary", response_model=List[ScanAlertSummaryItem])
+async def get_scan_alert_summary(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+    hours: int = Query(24, ge=1, le=168),
+):
+    """Get per-scan alert counts for new matches over the last window."""
+    ensure_preset_scans(db)
+    enabled_map = _alerts_enabled_scan_map(db, current_user)
+    if not enabled_map:
+        return []
+
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    counts = (
+        db.query(ScanAlertState.scan_id, func.count(ScanAlertState.id))
+        .filter(
+            ScanAlertState.scan_id.in_(list(enabled_map.keys())),
+            ScanAlertState.is_current_match == True,
+            ScanAlertState.last_notified_at.isnot(None),
+            ScanAlertState.last_notified_at >= cutoff,
+        )
+        .group_by(ScanAlertState.scan_id)
+        .all()
+    )
+    count_map = {scan_id: int(count) for scan_id, count in counts}
+
+    summary: list[ScanAlertSummaryItem] = []
+    for scan in enabled_map.values():
+        summary.append(
+            ScanAlertSummaryItem(
+                scan_id=scan.id,
+                scan_name=scan.name,
+                alerts_enabled=True,
+                new_matches=count_map.get(scan.id, 0),
+                match_count=scan.match_count or 0,
+                last_evaluated=scan.last_evaluated,
+            )
+        )
+    summary.sort(key=lambda item: (-item.new_matches, item.scan_name))
+    return summary
 
 
 @router.get("/{scan_id}", response_model=Scan)
@@ -426,11 +549,13 @@ async def evaluate_scan(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     results = ScanEvaluatorService.evaluate(db, scan)
-
-    # Update scan metadata
-    scan.last_evaluated = datetime.utcnow()
-    scan.match_count = len(results)
-    db.commit()
+    ScanEvaluatorService.record_scan_results(
+        db,
+        scan=scan,
+        matched_players=results,
+        run_at=datetime.utcnow(),
+        commit=True,
+    )
 
     return results[:limit]
 

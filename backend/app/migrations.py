@@ -56,6 +56,8 @@ def ensure_user_auth_columns(engine: Engine) -> None:
 def ensure_schema_updates(engine: Engine) -> None:
     ensure_user_yahoo_columns(engine)
     ensure_user_auth_columns(engine)
+    _ensure_app_settings_table(engine)
+    _ensure_scan_alert_tables(engine)
     _ensure_game_columns(engine)
     _ensure_player_game_stats_columns(engine)
     _ensure_player_rolling_stats_columns(engine)
@@ -66,6 +68,53 @@ def ensure_schema_updates(engine: Engine) -> None:
     _ensure_sync_state_timezone(engine)
     _ensure_indexes(engine)
     _backfill_scope_columns(engine)
+
+
+def _ensure_app_settings_table(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "app_settings" in inspector.get_table_names():
+        return
+
+    with engine.begin() as connection:
+        logger.info("Creating app_settings table")
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS app_settings ("
+            "key TEXT PRIMARY KEY,"
+            "value_json TEXT NOT NULL,"
+            "updated_at TIMESTAMP"
+            ")"
+        ))
+
+
+def _ensure_scan_alert_tables(engine: Engine) -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        if "scan_runs" not in tables:
+            logger.info("Creating scan_runs table")
+            connection.execute(text(
+                "CREATE TABLE IF NOT EXISTS scan_runs ("
+                "id VARCHAR(36) PRIMARY KEY,"
+                "scan_id VARCHAR(36) NOT NULL,"
+                "run_at TIMESTAMP,"
+                "match_count INTEGER DEFAULT 0,"
+                "error VARCHAR(500)"
+                ")"
+            ))
+        if "scan_alert_state" not in tables:
+            logger.info("Creating scan_alert_state table")
+            connection.execute(text(
+                "CREATE TABLE IF NOT EXISTS scan_alert_state ("
+                "id VARCHAR(36) PRIMARY KEY,"
+                "scan_id VARCHAR(36) NOT NULL,"
+                "player_id VARCHAR(36) NOT NULL,"
+                "is_current_match BOOLEAN DEFAULT 0,"
+                "last_matched_at TIMESTAMP,"
+                "last_notified_at TIMESTAMP,"
+                "created_at TIMESTAMP,"
+                "updated_at TIMESTAMP"
+                ")"
+            ))
 
 
 def _ensure_game_columns(engine: Engine) -> None:
@@ -302,10 +351,19 @@ def _ensure_indexes(engine: Engine) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_ownership_snapshots_player_date "
                 "ON player_ownership_snapshots (player_id, as_of)"
             ))
+        if "scan_runs" in tables:
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_scan_runs_scan_run_at "
+                "ON scan_runs (scan_id, run_at)"
+            ))
         if "scan_alert_state" in tables:
             connection.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_scan_alert_state_scan_player "
                 "ON scan_alert_state (scan_id, player_id)"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_scan_alert_state_notified "
+                "ON scan_alert_state (scan_id, is_current_match, last_notified_at)"
             ))
 
 

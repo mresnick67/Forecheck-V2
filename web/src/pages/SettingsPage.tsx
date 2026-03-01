@@ -16,13 +16,10 @@ type AdminStatus = {
   app_mode: string;
   run_sync_loop: boolean;
   nhl_sync_enabled: boolean;
-  yahoo_enabled: boolean;
-  yahoo_connected: boolean;
   current_season_id: string;
   last_game_log_sync_at?: string | null;
   last_rolling_stats_at?: string | null;
   last_scan_counts_at?: string | null;
-  last_ownership_sync_at?: string | null;
   game_log_checkpoint_date?: string | null;
   game_log_row_count: number;
   game_log_min_date?: string | null;
@@ -31,10 +28,37 @@ type AdminStatus = {
   recent_runs: AdminRun[];
 };
 
-type YahooConnectionStatus = {
-  connected: boolean;
-  yahoo_user_guid?: string | null;
-  expires_at?: string | null;
+type StreamerScoreConfig = {
+  league_influence: {
+    enabled: boolean;
+    weight: number;
+    minimum_games: number;
+  };
+  skater: {
+    weights: Record<string, number>;
+    caps: {
+      forward: Record<string, number>;
+      defense: Record<string, number>;
+    };
+    toggles: Record<string, boolean>;
+    toi_gate: Record<string, number>;
+  };
+  goalie: {
+    weights: Record<string, number>;
+    scales: Record<string, number>;
+    toggles: Record<string, boolean>;
+  };
+};
+
+type StreamerRecalcProgress = {
+  running: boolean;
+  status: string;
+  run_id?: string | null;
+  processed_players: number;
+  total_players: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
 };
 
 type BeforeInstallPromptEvent = Event & {
@@ -86,10 +110,112 @@ function compactError(value?: string | null): string | null {
   return trimmed.length > 200 ? `${trimmed.slice(0, 200)}...` : trimmed;
 }
 
+function labelize(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+const STREAMER_SCORE_HELP: Record<string, string> = {
+  "league_influence.enabled":
+    "When enabled, streamer score blends your base model with league-fit scoring from the active league profile.",
+  "league_influence.weight":
+    "Blend ratio for league-fit impact. 0 keeps pure base model; 1 uses only league-fit scoring.",
+  "league_influence.minimum_games":
+    "Required sample size before full league blending. Smaller samples get reduced league influence.",
+
+  "skater.weights.points_per_game": "Impact of point production (P/GP) in skater streamer score.",
+  "skater.weights.shots_per_game": "Impact of shot volume (SOG/GP).",
+  "skater.weights.power_play_points_per_game": "Impact of power-play scoring rate (PPP/GP).",
+  "skater.weights.time_on_ice_per_game": "Impact of average time on ice per game.",
+  "skater.weights.plus_minus_per_game": "Impact of +/- per game when plus/minus toggle is enabled.",
+  "skater.weights.hits_blocks_per_game": "Impact of combined hits + blocks rate when that toggle is enabled.",
+  "skater.weights.trend_hot_bonus": "Bonus added for players marked as hot trend.",
+  "skater.weights.trend_stable_bonus": "Bonus added for players marked as stable trend.",
+  "skater.weights.availability_bonus":
+    "Bonus for low-rostered players when availability scoring is enabled.",
+
+  "skater.toggles.use_plus_minus": "Include plus/minus component in skater score.",
+  "skater.toggles.use_hits_blocks": "Include hits + blocks component in skater score.",
+  "skater.toggles.use_trend_bonus": "Apply trend bonuses (hot/stable) to score.",
+  "skater.toggles.use_availability_bonus": "Reward lower ownership (waiver availability).",
+  "skater.toggles.use_toi_gate_for_availability":
+    "Scale availability bonus by TOI floor so low-usage players are de-emphasized.",
+
+  "skater.caps.forward.points_per_game": "Forward normalization cap for P/GP.",
+  "skater.caps.forward.shots_per_game": "Forward normalization cap for SOG/GP.",
+  "skater.caps.forward.power_play_points_per_game": "Forward normalization cap for PPP/GP.",
+  "skater.caps.forward.time_on_ice_per_game": "Forward normalization cap for TOI/GP.",
+  "skater.caps.forward.hits_blocks_per_game": "Forward normalization cap for combined hits + blocks per game.",
+
+  "skater.caps.defense.points_per_game": "Defense normalization cap for P/GP.",
+  "skater.caps.defense.shots_per_game": "Defense normalization cap for SOG/GP.",
+  "skater.caps.defense.power_play_points_per_game": "Defense normalization cap for PPP/GP.",
+  "skater.caps.defense.time_on_ice_per_game": "Defense normalization cap for TOI/GP.",
+  "skater.caps.defense.hits_blocks_per_game": "Defense normalization cap for combined hits + blocks per game.",
+
+  "skater.toi_gate.forward_floor":
+    "Minimum forward TOI baseline used by availability gating.",
+  "skater.toi_gate.defense_floor":
+    "Minimum defense TOI baseline used by availability gating.",
+
+  "goalie.weights.save_percentage": "Impact of save percentage quality.",
+  "goalie.weights.goals_against_average": "Impact of goals-against-average quality (lower is better).",
+  "goalie.weights.wins": "Impact of win rate over the window.",
+  "goalie.weights.starts": "Impact of start volume/share over the window.",
+  "goalie.weights.trend_hot_bonus": "Bonus for hot-trending goalies.",
+  "goalie.weights.trend_stable_bonus": "Bonus for stable-trending goalies.",
+  "goalie.weights.availability_bonus": "Bonus for low-rostered goalies when enabled.",
+
+  "goalie.scales.save_percentage_floor":
+    "Lower bound for save% normalization. Values at/under this contribute minimally.",
+  "goalie.scales.save_percentage_range":
+    "Normalization range above floor for save%. Larger range makes scale less sensitive.",
+  "goalie.scales.goals_against_average_ceiling":
+    "Upper GAA threshold used for normalization (lower GAA scores better).",
+  "goalie.scales.goals_against_average_range":
+    "Normalization range beneath GAA ceiling. Larger range makes scale less sensitive.",
+
+  "goalie.toggles.use_trend_bonus": "Apply trend bonuses to goalie score.",
+  "goalie.toggles.use_availability_bonus": "Reward lower ownership for goalies.",
+  "goalie.toggles.use_sample_penalty":
+    "Apply a penalty for very small goalie samples (e.g., 1 game).",
+};
+
+function helpText(path: string): string | undefined {
+  return STREAMER_SCORE_HELP[path];
+}
+
+type HelpLabelProps = {
+  text: string;
+  tip?: string;
+};
+
+function HelpLabel({ text, tip }: HelpLabelProps) {
+  return (
+    <span className="help-label">
+      <span>{text}</span>
+      {tip ? (
+        <span
+          className="help-dot"
+          tabIndex={0}
+          role="note"
+          aria-label={tip}
+          data-tip={tip}
+        >
+          i
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export default function SettingsPage({ session, onSession }: SettingsPageProps) {
   const [user, setUser] = useState<User | null>(null);
   const [adminStatus, setAdminStatus] = useState<AdminStatus | null>(null);
-  const [yahooStatus, setYahooStatus] = useState<YahooConnectionStatus | null>(null);
+  const [scoreDraft, setScoreDraft] = useState<StreamerScoreConfig | null>(null);
+  const [scoreSaving, setScoreSaving] = useState(false);
+  const [recalcProgress, setRecalcProgress] = useState<StreamerRecalcProgress | null>(null);
   const [deferredInstall, setDeferredInstall] = useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState<boolean>(() => {
     const nav = navigator as Navigator & { standalone?: boolean };
@@ -120,14 +246,76 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
     }
   }
 
-  async function loadYahooStatus() {
+  async function loadStreamerScoreConfig() {
     try {
-      const payload = await authRequest<YahooConnectionStatus>("/auth/yahoo/status", session, onSession);
-      setYahooStatus(payload);
+      const payload = await authRequest<{ config: StreamerScoreConfig }>(
+        "/admin/streamer-score/config",
+        session,
+        onSession,
+      );
+      setScoreDraft(payload.config);
     } catch (err) {
-      setYahooStatus(null);
-      setError(getErrorMessage(err, "Failed to load Yahoo connection status"));
+      setError(getErrorMessage(err, "Failed to load streamer score config"));
     }
+  }
+
+  async function loadStreamerRecalcProgress() {
+    try {
+      const payload = await authRequest<StreamerRecalcProgress>(
+        "/admin/streamer-score/recalculate",
+        session,
+        onSession,
+      );
+      setRecalcProgress(payload);
+    } catch (err) {
+      setError(getErrorMessage(err, "Failed to load recalculation progress"));
+    }
+  }
+
+  function updateScoreNumber(
+    group: "league_influence" | "skater" | "goalie",
+    section: "weights" | "caps" | "toggles" | "toi_gate" | "scales" | "league_influence",
+    key: string,
+    value: number,
+    nested?: "forward" | "defense",
+  ) {
+    setScoreDraft((prev) => {
+      if (!prev) return prev;
+      const next = JSON.parse(JSON.stringify(prev)) as StreamerScoreConfig;
+      if (group === "league_influence" && section === "league_influence") {
+        if (key === "weight" || key === "minimum_games") {
+          next.league_influence[key] = value;
+        }
+      } else if (group === "skater" && section === "caps" && nested) {
+        next.skater.caps[nested][key] = value;
+      } else if (group === "skater" && section === "toi_gate") {
+        next.skater.toi_gate[key] = value;
+      } else if (group === "skater" && section === "weights") {
+        next.skater.weights[key] = value;
+      } else if (group === "goalie" && section === "weights") {
+        next.goalie.weights[key] = value;
+      } else if (group === "goalie" && section === "scales") {
+        next.goalie.scales[key] = value;
+      }
+      return next;
+    });
+  }
+
+  function updateScoreToggle(group: "league_influence" | "skater" | "goalie", key: string, value: boolean) {
+    setScoreDraft((prev) => {
+      if (!prev) return prev;
+      const next = JSON.parse(JSON.stringify(prev)) as StreamerScoreConfig;
+      if (group === "league_influence") {
+        if (key === "enabled") {
+          next.league_influence.enabled = value;
+        }
+      } else if (group === "skater") {
+        next.skater.toggles[key] = value;
+      } else {
+        next.goalie.toggles[key] = value;
+      }
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -147,13 +335,11 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
     }
 
     async function loadDashboard() {
-      const payload = await loadAdminStatus();
+      await loadAdminStatus();
       if (canceled) return;
-      if (payload?.yahoo_enabled) {
-        await loadYahooStatus();
-      } else {
-        setYahooStatus(null);
-      }
+      await loadStreamerScoreConfig();
+      if (canceled) return;
+      await loadStreamerRecalcProgress();
     }
 
     void Promise.all([loadProfile(), loadDashboard()]);
@@ -180,25 +366,15 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       setIsStandalone(window.matchMedia("(display-mode: standalone)").matches || Boolean(nav.standalone));
     }
 
-    function onMessage(event: MessageEvent) {
-      if (!event.data || event.data.type !== "forecheck-yahoo-connected") return;
-      if (!adminStatus?.yahoo_enabled) return;
-      setStatus("Yahoo authorization completed.");
-      void loadYahooStatus();
-      void loadAdminStatus();
-    }
-
     window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt as EventListener);
     window.addEventListener("appinstalled", onInstalled);
     window.addEventListener("focus", updateStandalone);
-    window.addEventListener("message", onMessage);
     return () => {
       window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt as EventListener);
       window.removeEventListener("appinstalled", onInstalled);
       window.removeEventListener("focus", updateStandalone);
-      window.removeEventListener("message", onMessage);
     };
-  }, [adminStatus?.yahoo_enabled]);
+  }, []);
 
   const runningJobsKey = adminStatus?.running_jobs.join("|") ?? "";
 
@@ -211,6 +387,17 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       window.clearInterval(intervalId);
     };
   }, [runningJobsKey, session, onSession]);
+
+  useEffect(() => {
+    if (!recalcProgress?.running) return;
+    const intervalId = window.setInterval(() => {
+      void loadStreamerRecalcProgress();
+      void loadAdminStatus();
+    }, 2000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [recalcProgress?.running, session, onSession]);
 
   async function runPipeline() {
     setError(null);
@@ -268,63 +455,35 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
     }
   }
 
-  async function connectYahoo() {
+  async function saveScoreConfigAndRecalculate() {
+    if (!scoreDraft) return;
     setError(null);
     setStatus(null);
+    setScoreSaving(true);
     try {
-      const payload = await authRequest<{ authorization_url: string }>(
-        "/auth/yahoo/login?redirect=false",
+      const saved = await authRequest<{ config: StreamerScoreConfig }>(
+        "/admin/streamer-score/config",
         session,
         onSession,
+        {
+          method: "PUT",
+          json: { config: scoreDraft },
+        },
       );
-      const popup = window.open(payload.authorization_url, "forecheck-yahoo-auth", "width=680,height=800");
-      if (!popup) {
-        window.location.href = payload.authorization_url;
-        return;
-      }
-      popup.focus();
-      setStatus("Yahoo authorization opened in popup.");
-    } catch (err) {
-      setError(getErrorMessage(err, "Failed to open Yahoo authorization"));
-    }
-  }
+      setScoreDraft(saved.config);
 
-  async function disconnectYahoo() {
-    setError(null);
-    setStatus(null);
-    try {
-      await authRequest("/auth/yahoo/disconnect", session, onSession, { method: "POST" });
-      setStatus("Yahoo disconnected.");
-      await loadYahooStatus();
-      await loadAdminStatus();
+      const progress = await authRequest<StreamerRecalcProgress>(
+        "/admin/streamer-score/recalculate",
+        session,
+        onSession,
+        { method: "POST" },
+      );
+      setRecalcProgress(progress);
+      setStatus("Streamer score config saved. Recalculation started.");
     } catch (err) {
-      setError(getErrorMessage(err, "Failed to disconnect Yahoo"));
-    }
-  }
-
-  async function refreshYahooToken() {
-    setError(null);
-    setStatus(null);
-    try {
-      await authRequest("/auth/yahoo/refresh", session, onSession, { method: "POST" });
-      setStatus("Yahoo token refreshed.");
-      await loadYahooStatus();
-    } catch (err) {
-      setError(getErrorMessage(err, "Failed to refresh Yahoo token"));
-    }
-  }
-
-  async function syncYahooOwnership() {
-    setError(null);
-    setStatus(null);
-    try {
-      const payload = await authRequest<{ updated: number }>("/admin/sync/ownership", session, onSession, {
-        method: "POST",
-      });
-      setStatus(`Yahoo ownership synced for ${payload.updated} players.`);
-      await loadAdminStatus();
-    } catch (err) {
-      setError(getErrorMessage(err, "Yahoo ownership sync failed"));
+      setError(getErrorMessage(err, "Failed to save streamer score config"));
+    } finally {
+      setScoreSaving(false);
     }
   }
 
@@ -361,6 +520,11 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
   function logout() {
     onSession(null);
   }
+
+  const recalcPercent =
+    recalcProgress && recalcProgress.total_players > 0
+      ? Math.min(100, Math.round((recalcProgress.processed_players / recalcProgress.total_players) * 100))
+      : 0;
 
   return (
     <div className="page-stack settings-stack">
@@ -448,6 +612,275 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
 
       <section className="card ios-card">
         <div className="list-head">
+          <h2>Streamer Score Model</h2>
+          <small className="muted">Editable weights + toggles</small>
+        </div>
+        <p className="muted">Adjust scoring components, save, and run a full rolling-stat recalculation.</p>
+        {!scoreDraft ? (
+          <p className="muted">Loading model settings...</p>
+        ) : (
+          <div className="score-config-grid">
+            <article className="score-config-card">
+              <h3>League Influence</h3>
+              <p className="muted compact">
+                Blend league scoring fit into streamer score using your active league profile.
+              </p>
+              <div className="score-toggle-grid">
+                <label className="score-toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(scoreDraft.league_influence.enabled)}
+                    onChange={(event) =>
+                      updateScoreToggle("league_influence", "enabled", event.target.checked)
+                    }
+                  />
+                  <HelpLabel
+                    text="Enable league-fit blending"
+                    tip={helpText("league_influence.enabled")}
+                  />
+                </label>
+              </div>
+              <div className="score-config-fields">
+                <label>
+                  <HelpLabel
+                    text="League Weight (0-1)"
+                    tip={helpText("league_influence.weight")}
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step="0.05"
+                    value={scoreDraft.league_influence.weight}
+                    onChange={(event) =>
+                      updateScoreNumber(
+                        "league_influence",
+                        "league_influence",
+                        "weight",
+                        Number(event.target.value) || 0,
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  <HelpLabel
+                    text="Min Games Before Full Blend"
+                    tip={helpText("league_influence.minimum_games")}
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={82}
+                    step="1"
+                    value={scoreDraft.league_influence.minimum_games}
+                    onChange={(event) =>
+                      updateScoreNumber(
+                        "league_influence",
+                        "league_influence",
+                        "minimum_games",
+                        Number(event.target.value) || 0,
+                      )
+                    }
+                  />
+                </label>
+              </div>
+            </article>
+
+            <article className="score-config-card">
+              <h3>Skater Weights</h3>
+              <div className="score-config-fields">
+                {Object.entries(scoreDraft.skater.weights).map(([key, value]) => (
+                  <label key={`skater-weight-${key}`}>
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`skater.weights.${key}`)}
+                    />
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={value}
+                      onChange={(event) =>
+                        updateScoreNumber("skater", "weights", key, Number(event.target.value) || 0)
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <h3>Skater Toggles</h3>
+              <div className="score-toggle-grid">
+                {Object.entries(scoreDraft.skater.toggles).map(([key, value]) => (
+                  <label key={`skater-toggle-${key}`} className="score-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(value)}
+                      onChange={(event) => updateScoreToggle("skater", key, event.target.checked)}
+                    />
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`skater.toggles.${key}`)}
+                    />
+                  </label>
+                ))}
+              </div>
+            </article>
+
+            <article className="score-config-card">
+              <h3>Skater Caps (Forwards)</h3>
+              <div className="score-config-fields">
+                {Object.entries(scoreDraft.skater.caps.forward).map(([key, value]) => (
+                  <label key={`skater-forward-cap-${key}`}>
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`skater.caps.forward.${key}`)}
+                    />
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={value}
+                      onChange={(event) =>
+                        updateScoreNumber("skater", "caps", key, Number(event.target.value) || 0, "forward")
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <h3>Skater Caps (Defense)</h3>
+              <div className="score-config-fields">
+                {Object.entries(scoreDraft.skater.caps.defense).map(([key, value]) => (
+                  <label key={`skater-defense-cap-${key}`}>
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`skater.caps.defense.${key}`)}
+                    />
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={value}
+                      onChange={(event) =>
+                        updateScoreNumber("skater", "caps", key, Number(event.target.value) || 0, "defense")
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <h3>TOI Gate</h3>
+              <div className="score-config-fields">
+                {Object.entries(scoreDraft.skater.toi_gate).map(([key, value]) => (
+                  <label key={`skater-toi-gate-${key}`}>
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`skater.toi_gate.${key}`)}
+                    />
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={value}
+                      onChange={(event) =>
+                        updateScoreNumber("skater", "toi_gate", key, Number(event.target.value) || 0)
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+            </article>
+
+            <article className="score-config-card">
+              <h3>Goalie Weights</h3>
+              <div className="score-config-fields">
+                {Object.entries(scoreDraft.goalie.weights).map(([key, value]) => (
+                  <label key={`goalie-weight-${key}`}>
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`goalie.weights.${key}`)}
+                    />
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={value}
+                      onChange={(event) =>
+                        updateScoreNumber("goalie", "weights", key, Number(event.target.value) || 0)
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <h3>Goalie Scales</h3>
+              <div className="score-config-fields">
+                {Object.entries(scoreDraft.goalie.scales).map(([key, value]) => (
+                  <label key={`goalie-scale-${key}`}>
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`goalie.scales.${key}`)}
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={value}
+                      onChange={(event) =>
+                        updateScoreNumber("goalie", "scales", key, Number(event.target.value) || 0)
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <h3>Goalie Toggles</h3>
+              <div className="score-toggle-grid">
+                {Object.entries(scoreDraft.goalie.toggles).map(([key, value]) => (
+                  <label key={`goalie-toggle-${key}`} className="score-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(value)}
+                      onChange={(event) => updateScoreToggle("goalie", key, event.target.checked)}
+                    />
+                    <HelpLabel
+                      text={labelize(key)}
+                      tip={helpText(`goalie.toggles.${key}`)}
+                    />
+                  </label>
+                ))}
+              </div>
+            </article>
+          </div>
+        )}
+
+        <div className="button-row">
+          <button
+            className="primary"
+            onClick={() => void saveScoreConfigAndRecalculate()}
+            disabled={!scoreDraft || scoreSaving || recalcProgress?.running}
+          >
+            {scoreSaving ? "Saving..." : recalcProgress?.running ? "Recalculating..." : "Save + Recalculate"}
+          </button>
+          <button onClick={() => void loadStreamerScoreConfig()} disabled={scoreSaving}>
+            Reset Draft
+          </button>
+          <button onClick={() => void loadStreamerRecalcProgress()}>Refresh Progress</button>
+        </div>
+
+        {recalcProgress ? (
+          <div className="recalc-status">
+            <p className="muted compact">
+              Status: {recalcProgress.status} • Processed: {recalcProgress.processed_players}
+              {recalcProgress.total_players > 0 ? ` / ${recalcProgress.total_players}` : ""}
+            </p>
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${recalcPercent}%` }} />
+            </div>
+            {recalcProgress.started_at ? (
+              <small className="muted">Started: {formatDateTime(recalcProgress.started_at)}</small>
+            ) : null}
+            {recalcProgress.finished_at ? (
+              <small className="muted">Finished: {formatDateTime(recalcProgress.finished_at)}</small>
+            ) : null}
+            {recalcProgress.error ? <p className="run-error">{compactError(recalcProgress.error)}</p> : null}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="card ios-card">
+        <div className="list-head">
           <h2>Recent Sync Runs</h2>
           <small className="muted">{adminStatus?.recent_runs.length ?? 0} runs</small>
         </div>
@@ -474,42 +907,13 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
         )}
       </section>
 
-      {adminStatus?.yahoo_enabled ? (
-        <section className="card ios-card">
-          <h2>Yahoo Integration</h2>
-          <p className="muted">Optional OAuth integration for ownership sync.</p>
-          <ul>
-            <li>Enabled: Yes</li>
-            <li>Connected: {yahooStatus?.connected ? "Yes" : "No"}</li>
-            <li>Yahoo GUID: {yahooStatus?.yahoo_user_guid ?? "n/a"}</li>
-            <li>Token expires: {formatDateTime(yahooStatus?.expires_at)}</li>
-            <li>Last ownership sync: {formatDateTime(adminStatus.last_ownership_sync_at)}</li>
-          </ul>
-          <div className="button-row">
-            <button className="primary" onClick={() => void connectYahoo()}>
-              Connect Yahoo
-            </button>
-            <button onClick={() => void refreshYahooToken()} disabled={!yahooStatus?.connected}>
-              Refresh Yahoo Token
-            </button>
-            <button onClick={() => void syncYahooOwnership()} disabled={!yahooStatus?.connected}>
-              Sync Yahoo Ownership
-            </button>
-            <button className="danger" onClick={() => void disconnectYahoo()} disabled={!yahooStatus?.connected}>
-              Disconnect Yahoo
-            </button>
-            <button onClick={() => void loadYahooStatus()}>Refresh Yahoo Status</button>
-          </div>
-        </section>
-      ) : (
-        <section className="card ios-card">
-          <h2>External Integrations</h2>
-          <p className="muted">
-            Yahoo OAuth is intentionally disabled in local-first mode. Core analytics and scans run fully without it.
-            Planned Yahoo support path: browser extension overlay for yahoo.com/fantasy pages.
-          </p>
-        </section>
-      )}
+      <section className="card ios-card">
+        <h2>External Integrations</h2>
+        <p className="muted">
+          Yahoo sync is disabled in local-first mode. Forecheck v2 now runs scans and analytics without ownership
+          percentages, and the planned Yahoo path is a browser extension overlay on yahoo.com/fantasy pages.
+        </p>
+      </section>
 
       {status ? <p className="success">{status}</p> : null}
       {error ? <p className="error">{error}</p> : null}

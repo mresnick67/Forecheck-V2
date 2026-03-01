@@ -7,6 +7,7 @@ from app.schemas.player import (
 from app.schemas.game import Game, GameCreate, GameUpdate
 from app.schemas.scan import Scan, ScanCreate, ScanUpdate, ScanRule, ScanRuleCreate
 from app.schemas.league import League, LeagueCreate, LeagueUpdate
+from app.schemas.alert import ScanAlertFeedItem, ScanAlertSummaryItem
 
 __all__ = [
     "User", "UserCreate", "UserUpdate", "UserInDB", "Token", "TokenData",
@@ -16,4 +17,5 @@ __all__ = [
     "Game", "GameCreate", "GameUpdate",
     "Scan", "ScanCreate", "ScanUpdate", "ScanRule", "ScanRuleCreate",
     "League", "LeagueCreate", "LeagueUpdate",
+    "ScanAlertFeedItem", "ScanAlertSummaryItem",
 ]

@@ -22,12 +22,13 @@ export type User = {
 
 export type Player = {
   id: string;
+  external_id?: string | null;
   name: string;
   team: string;
   position: string;
   number?: number;
+  headshot_url?: string | null;
   current_streamer_score: number;
-  ownership_percentage: number;
 };
 
 export type ExplorePlayer = Player & {
@@ -78,4 +79,5 @@ export type League = {
   league_type: string;
   scoring_weights: Record<string, number>;
   is_active: boolean;
+  updated_at?: string;
 };

@@ -31,11 +31,13 @@ function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <main className="app-shell">
-      <header className="top-header">
-        <small className="eyebrow">Forecheck v2</small>
-        <h1>{isPlayerDetail ? "Player Detail" : active.label}</h1>
-        <p className="muted">{isPlayerDetail ? "Window comparisons and game logs" : active.subtitle}</p>
-      </header>
+      {!isPlayerDetail ? (
+        <header className="top-header">
+          <small className="eyebrow">Forecheck v2</small>
+          <h1>{active.label}</h1>
+          <p className="muted">{active.subtitle}</p>
+        </header>
+      ) : null}
 
       <section className="page-content">{children}</section>
 
@@ -121,7 +123,7 @@ export default function App() {
   return (
     <AppLayout>
       <Routes>
-        <Route path="/" element={<DiscoverPage />} />
+        <Route path="/" element={<DiscoverPage session={session} onSession={handleSession} />} />
         <Route path="/explore" element={<ExplorePage />} />
         <Route path="/players/:playerId" element={<PlayerDetailPage />} />
         <Route path="/scans" element={<ScansPage session={session} onSession={handleSession} />} />
