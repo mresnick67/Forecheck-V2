@@ -8,7 +8,7 @@ Self-hosted fantasy hockey analytics platform for one local owner user.
 - FastAPI backend + React PWA frontend.
 - All-in-one Docker Compose setup.
 - Single-owner bootstrap flow (`/setup/bootstrap`) with public registration disabled by default.
-- Yahoo ownership integration available as explicit opt-in (`YAHOO_ENABLED=true`).
+- Local-first defaults with no required third-party auth provider.
 
 ## What v2 removes
 
@@ -67,6 +67,12 @@ Install as PWA (optional):
 ## Environment defaults
 
 See [backend/.env.example](/Users/mylesresnick/xCode Projects/Forecheck Fantasy/forecheck-v2/backend/.env.example).
+
+## Local-first integration posture
+
+- Core analytics stack is designed to run fully local on `http://localhost:6767`.
+- Yahoo OAuth is disabled by default (`YAHOO_ENABLED=false`) and is not required for normal use.
+- Planned Yahoo integration direction is browser-extension based rather than required local OAuth setup.
 
 ## Security notes
 

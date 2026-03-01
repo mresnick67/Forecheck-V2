@@ -47,6 +47,45 @@ type SettingsPageProps = {
   onSession: (session: AuthSession | null) => void;
 };
 
+function formatDateTime(value?: string | null): string {
+  if (!value) return "n/a";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function formatDuration(startedAt?: string | null, finishedAt?: string | null): string {
+  if (!startedAt) return "n/a";
+  if (!finishedAt) return "running";
+  const start = new Date(startedAt);
+  const end = new Date(finishedAt);
+  const diffSeconds = Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+  if (!Number.isFinite(diffSeconds)) return "n/a";
+  if (diffSeconds < 60) return `${diffSeconds}s`;
+  const minutes = Math.floor(diffSeconds / 60);
+  const seconds = diffSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function runBadgeClass(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "success") return "run-badge run-success";
+  if (normalized === "failed") return "run-badge run-failed";
+  if (normalized === "running") return "run-badge run-running";
+  if (normalized === "skipped") return "run-badge run-skipped";
+  return "run-badge";
+}
+
+function compactError(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length > 200 ? `${trimmed.slice(0, 200)}...` : trimmed;
+}
+
 export default function SettingsPage({ session, onSession }: SettingsPageProps) {
   const [user, setUser] = useState<User | null>(null);
   const [adminStatus, setAdminStatus] = useState<AdminStatus | null>(null);
@@ -70,12 +109,14 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
     return err.message || fallback;
   }
 
-  async function loadAdminStatus() {
+  async function loadAdminStatus(): Promise<AdminStatus | null> {
     try {
       const payload = await authRequest<AdminStatus>("/admin/status", session, onSession);
       setAdminStatus(payload);
+      return payload;
     } catch (err) {
       setError(getErrorMessage(err, "Failed to load admin status"));
+      return null;
     }
   }
 
@@ -90,18 +131,36 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
   }
 
   useEffect(() => {
+    let canceled = false;
+
     async function loadProfile() {
       try {
         const me = await authRequest<User>("/auth/me", session, onSession);
-        setUser(me);
+        if (!canceled) {
+          setUser(me);
+        }
       } catch (err) {
-        setError(getErrorMessage(err, "Failed to load profile"));
+        if (!canceled) {
+          setError(getErrorMessage(err, "Failed to load profile"));
+        }
       }
     }
 
-    void loadProfile();
-    void loadAdminStatus();
-    void loadYahooStatus();
+    async function loadDashboard() {
+      const payload = await loadAdminStatus();
+      if (canceled) return;
+      if (payload?.yahoo_enabled) {
+        await loadYahooStatus();
+      } else {
+        setYahooStatus(null);
+      }
+    }
+
+    void Promise.all([loadProfile(), loadDashboard()]);
+
+    return () => {
+      canceled = true;
+    };
   }, [session, onSession]);
 
   useEffect(() => {
@@ -123,6 +182,7 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
 
     function onMessage(event: MessageEvent) {
       if (!event.data || event.data.type !== "forecheck-yahoo-connected") return;
+      if (!adminStatus?.yahoo_enabled) return;
       setStatus("Yahoo authorization completed.");
       void loadYahooStatus();
       void loadAdminStatus();
@@ -138,7 +198,19 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       window.removeEventListener("focus", updateStandalone);
       window.removeEventListener("message", onMessage);
     };
-  }, [session]);
+  }, [adminStatus?.yahoo_enabled]);
+
+  const runningJobsKey = adminStatus?.running_jobs.join("|") ?? "";
+
+  useEffect(() => {
+    if (!adminStatus || adminStatus.running_jobs.length === 0) return;
+    const intervalId = window.setInterval(() => {
+      void loadAdminStatus();
+    }, 10000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [runningJobsKey, session, onSession]);
 
   async function runPipeline() {
     setError(null);
@@ -291,8 +363,8 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
   }
 
   return (
-    <div className="grid cols-2">
-      <section className="card">
+    <div className="page-stack settings-stack">
+      <section className="card ios-card">
         <h2>Account</h2>
         {user ? (
           <ul>
@@ -323,16 +395,18 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
         </div>
       </section>
 
-      <section className="card">
+      <section className="card ios-card">
         <h2>Admin Pipeline</h2>
         <p className="muted">Run analytics sync on demand. All authenticated users are treated as admin in v2.</p>
 
-        <button className="primary" onClick={() => void runPipeline()}>
-          Run Sync Pipeline
-        </button>
-        <button onClick={() => void runFullBackfill()}>Run Full-Season Game Log Backfill</button>
-        <button onClick={() => void refreshScanCounts()}>Refresh Scan Counts</button>
-        <button onClick={() => void loadAdminStatus()}>Refresh Sync Status</button>
+        <div className="button-row">
+          <button className="primary" onClick={() => void runPipeline()}>
+            Run Sync Pipeline
+          </button>
+          <button onClick={() => void runFullBackfill()}>Run Full-Season Game Log Backfill</button>
+          <button onClick={() => void refreshScanCounts()}>Refresh Scan Counts</button>
+          <button onClick={() => void loadAdminStatus()}>Refresh Sync Status</button>
+        </div>
 
         {adminStatus ? (
           <>
@@ -340,61 +414,104 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
               Season {adminStatus.current_season_id} | Sync enabled: {adminStatus.nhl_sync_enabled ? "Yes" : "No"} |
               Worker loop: {adminStatus.run_sync_loop ? "On" : "Off"}
             </p>
-            <ul>
-              <li>Running jobs: {adminStatus.running_jobs.length ? adminStatus.running_jobs.join(", ") : "none"}</li>
-              <li>Game log rows: {adminStatus.game_log_row_count}</li>
-              <li>
-                Game log coverage: {adminStatus.game_log_min_date ?? "n/a"} to {adminStatus.game_log_max_date ?? "n/a"}
-              </li>
-              <li>Checkpoint date: {adminStatus.game_log_checkpoint_date ?? "n/a"}</li>
-              <li>Last game-log sync: {adminStatus.last_game_log_sync_at ?? "n/a"}</li>
-              <li>Last rolling-stats sync: {adminStatus.last_rolling_stats_at ?? "n/a"}</li>
-              <li>Last scan-count refresh: {adminStatus.last_scan_counts_at ?? "n/a"}</li>
-              <li>Last Yahoo ownership sync: {adminStatus.last_ownership_sync_at ?? "n/a"}</li>
-            </ul>
+            <div className="sync-summary-grid">
+              <article className="sync-summary-card">
+                <small className="muted">Running jobs</small>
+                <strong>{adminStatus.running_jobs.length || 0}</strong>
+                <small className="muted">
+                  {adminStatus.running_jobs.length ? adminStatus.running_jobs.join(", ") : "Idle"}
+                </small>
+              </article>
+              <article className="sync-summary-card">
+                <small className="muted">Game log rows</small>
+                <strong>{adminStatus.game_log_row_count.toLocaleString()}</strong>
+                <small className="muted">
+                  {adminStatus.game_log_min_date ?? "n/a"} to {adminStatus.game_log_max_date ?? "n/a"}
+                </small>
+              </article>
+              <article className="sync-summary-card">
+                <small className="muted">Last game-log sync</small>
+                <strong>{formatDateTime(adminStatus.last_game_log_sync_at)}</strong>
+                <small className="muted">Checkpoint: {adminStatus.game_log_checkpoint_date ?? "n/a"}</small>
+              </article>
+              <article className="sync-summary-card">
+                <small className="muted">Stats + scans refresh</small>
+                <strong>{formatDateTime(adminStatus.last_rolling_stats_at)}</strong>
+                <small className="muted">Scan counts: {formatDateTime(adminStatus.last_scan_counts_at)}</small>
+              </article>
+            </div>
           </>
         ) : (
           <p className="muted">Loading sync status...</p>
         )}
-
-        {status ? <p className="success">{status}</p> : null}
       </section>
 
-      <section className="card">
-        <h2>Yahoo Integration</h2>
-        <p className="muted">Connect Yahoo from this device and sync ownership into streamer workflows.</p>
-
-        {adminStatus?.yahoo_enabled ? (
-          <>
-            <ul>
-              <li>Enabled: Yes</li>
-              <li>Connected: {yahooStatus?.connected ? "Yes" : "No"}</li>
-              <li>Yahoo GUID: {yahooStatus?.yahoo_user_guid ?? "n/a"}</li>
-              <li>Token expires: {yahooStatus?.expires_at ?? "n/a"}</li>
-            </ul>
-            <div className="button-row">
-              <button className="primary" onClick={() => void connectYahoo()}>
-                Connect Yahoo
-              </button>
-              <button onClick={() => void refreshYahooToken()} disabled={!yahooStatus?.connected}>
-                Refresh Yahoo Token
-              </button>
-              <button onClick={() => void syncYahooOwnership()} disabled={!yahooStatus?.connected}>
-                Sync Yahoo Ownership
-              </button>
-              <button className="danger" onClick={() => void disconnectYahoo()} disabled={!yahooStatus?.connected}>
-                Disconnect Yahoo
-              </button>
-              <button onClick={() => void loadYahooStatus()}>Refresh Yahoo Status</button>
-            </div>
-          </>
+      <section className="card ios-card">
+        <div className="list-head">
+          <h2>Recent Sync Runs</h2>
+          <small className="muted">{adminStatus?.recent_runs.length ?? 0} runs</small>
+        </div>
+        <p className="muted">Latest worker and admin-triggered jobs with status and error details.</p>
+        {adminStatus?.recent_runs.length ? (
+          <div className="run-list">
+            {adminStatus.recent_runs.map((run) => (
+              <article key={`${run.job}-${run.started_at}`} className="run-item">
+                <div className="run-head">
+                  <strong>{run.job}</strong>
+                  <span className={runBadgeClass(run.status)}>{run.status}</span>
+                </div>
+                <p className="muted compact">
+                  Rows: {run.row_count.toLocaleString()} • Started: {formatDateTime(run.started_at)} • Duration:{" "}
+                  {formatDuration(run.started_at, run.finished_at)}
+                </p>
+                {run.finished_at ? <small className="muted">Finished: {formatDateTime(run.finished_at)}</small> : null}
+                {compactError(run.error) ? <p className="run-error">{compactError(run.error)}</p> : null}
+              </article>
+            ))}
+          </div>
         ) : (
-          <p className="muted">
-            Yahoo is disabled. Set `YAHOO_ENABLED=true` plus Yahoo client env vars in `docker-compose.yml`, then restart.
-          </p>
+          <p className="muted">No runs recorded yet.</p>
         )}
       </section>
 
+      {adminStatus?.yahoo_enabled ? (
+        <section className="card ios-card">
+          <h2>Yahoo Integration</h2>
+          <p className="muted">Optional OAuth integration for ownership sync.</p>
+          <ul>
+            <li>Enabled: Yes</li>
+            <li>Connected: {yahooStatus?.connected ? "Yes" : "No"}</li>
+            <li>Yahoo GUID: {yahooStatus?.yahoo_user_guid ?? "n/a"}</li>
+            <li>Token expires: {formatDateTime(yahooStatus?.expires_at)}</li>
+            <li>Last ownership sync: {formatDateTime(adminStatus.last_ownership_sync_at)}</li>
+          </ul>
+          <div className="button-row">
+            <button className="primary" onClick={() => void connectYahoo()}>
+              Connect Yahoo
+            </button>
+            <button onClick={() => void refreshYahooToken()} disabled={!yahooStatus?.connected}>
+              Refresh Yahoo Token
+            </button>
+            <button onClick={() => void syncYahooOwnership()} disabled={!yahooStatus?.connected}>
+              Sync Yahoo Ownership
+            </button>
+            <button className="danger" onClick={() => void disconnectYahoo()} disabled={!yahooStatus?.connected}>
+              Disconnect Yahoo
+            </button>
+            <button onClick={() => void loadYahooStatus()}>Refresh Yahoo Status</button>
+          </div>
+        </section>
+      ) : (
+        <section className="card ios-card">
+          <h2>External Integrations</h2>
+          <p className="muted">
+            Yahoo OAuth is intentionally disabled in local-first mode. Core analytics and scans run fully without it.
+            Planned Yahoo support path: browser extension overlay for yahoo.com/fantasy pages.
+          </p>
+        </section>
+      )}
+
+      {status ? <p className="success">{status}</p> : null}
       {error ? <p className="error">{error}</p> : null}
     </div>
   );
