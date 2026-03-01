@@ -54,6 +54,7 @@ Install as PWA (optional):
 - `POST /auth/refresh`
 - `GET /auth/me`
 - `GET /players`, `GET /players/{id}`
+- `GET /players/{id}/signals`
 - `GET /players/explore` (window-aware advanced filters)
 - `GET/POST/PUT/DELETE /scans`
 - `POST /scans/refresh-counts`

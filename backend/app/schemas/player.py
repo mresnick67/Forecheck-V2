@@ -194,3 +194,14 @@ class PlayerRollingStats(BaseModel):
 class PlayerWithStats(Player):
     rolling_stats: Optional[dict[str, PlayerRollingStats]] = None  # keyed by window
     recent_games: Optional[List[PlayerGameStats]] = None
+
+
+class PlayerSignalScan(BaseModel):
+    id: str
+    name: str
+
+
+class PlayerSignals(BaseModel):
+    trend_direction: Optional[str] = None
+    temperature_tag: Optional[str] = None
+    preset_matches: List[PlayerSignalScan] = Field(default_factory=list)

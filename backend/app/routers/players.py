@@ -6,13 +6,23 @@ from datetime import datetime
 
 from app.database import get_db
 from app.models.player import Player as PlayerModel, PlayerRollingStats as RollingStatsModel, PlayerGameStats as GameStatsModel
+from app.models.scan import Scan as ScanModel
 from app.models.team_week_schedule import TeamWeekSchedule
 from app.models.game import Game as GameModel
-from app.schemas.player import ExplorePlayer, Player, PlayerWithStats, PlayerRollingStats, PlayerGameStats
+from app.schemas.player import (
+    ExplorePlayer,
+    Player,
+    PlayerWithStats,
+    PlayerRollingStats,
+    PlayerGameStats,
+    PlayerSignals,
+    PlayerSignalScan,
+)
 from app.schemas.game import Game
 from app.config import get_settings
 from app.services.analytics import AnalyticsService
 from app.services.nhl_sync import sync_player_game_log, needs_game_log_sync
+from app.services.scan_evaluator import ScanEvaluatorService
 from app.services.season import current_season_id, current_game_type
 from app.services.week_schedule import current_week_bounds
 
@@ -448,6 +458,43 @@ async def get_player(
         **payload,
         rolling_stats=rolling_stats_dict,
         recent_games=[PlayerGameStats.model_validate(g) for g in recent_games],
+    )
+
+
+@router.get("/{player_id}/signals", response_model=PlayerSignals)
+async def get_player_signals(
+    player_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get player detail signals used by the PWA detail header."""
+    player = db.query(PlayerModel).filter(PlayerModel.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    l5_stats = db.query(RollingStatsModel).filter(
+        RollingStatsModel.player_id == player_id,
+        RollingStatsModel.window == "L5",
+        RollingStatsModel.season_id == current_season_id(),
+        RollingStatsModel.game_type == current_game_type(),
+    ).first()
+
+    # Ensure preset scans exist before matching.
+    from app.routers.scans import ensure_preset_scans
+    ensure_preset_scans(db)
+
+    presets = db.query(ScanModel).filter(ScanModel.is_preset == True).all()
+    preset_matches: list[PlayerSignalScan] = []
+    for scan in presets:
+        results = ScanEvaluatorService.evaluate(db, scan)
+        if any(result.id == player_id for result in results):
+            preset_matches.append(PlayerSignalScan(id=scan.id, name=scan.name))
+
+    preset_matches.sort(key=lambda item: item.name)
+
+    return PlayerSignals(
+        trend_direction=l5_stats.trend_direction if l5_stats else None,
+        temperature_tag=l5_stats.temperature_tag if l5_stats else None,
+        preset_matches=preset_matches,
     )
 
 

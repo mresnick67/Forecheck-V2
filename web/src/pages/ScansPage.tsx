@@ -80,7 +80,7 @@ function emptyRule(): ScanRule {
 export default function ScansPage({ session, onSession }: ScansPageProps) {
   const [scans, setScans] = useState<Scan[]>([]);
   const [selectedScanId, setSelectedScanId] = useState<string>("");
-  const [results, setResults] = useState<Player[]>([]);
+  const [evaluatedByScan, setEvaluatedByScan] = useState<Record<string, Player[]>>({});
   const [previewResults, setPreviewResults] = useState<Player[]>([]);
 
   const [name, setName] = useState("");
@@ -99,6 +99,7 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
     () => scans.find((scan) => scan.id === selectedScanId) ?? null,
     [scans, selectedScanId],
   );
+  const selectedResults = selectedScanId ? evaluatedByScan[selectedScanId] ?? [] : [];
 
   async function loadScans(refreshCounts: boolean, force = false): Promise<boolean> {
     setLoadingScans(true);
@@ -238,7 +239,7 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
       const response = await publicRequest<Player[]>(`/scans/${scanId}/evaluate?limit=40`, {
         method: "POST",
       });
-      setResults(response);
+      setEvaluatedByScan((prev) => ({ ...prev, [scanId]: response }));
       setSelectedScanId(scanId);
       setStatus(`Evaluation complete: ${response.length} players returned.`);
       await loadScans(false);
@@ -265,8 +266,12 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
       });
       if (selectedScanId === scanId) {
         setSelectedScanId("");
-        setResults([]);
       }
+      setEvaluatedByScan((prev) => {
+        const next = { ...prev };
+        delete next[scanId];
+        return next;
+      });
       await loadScans(false);
       setStatus("Scan deleted.");
     } catch (err) {
@@ -450,11 +455,31 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
                 Last evaluated: {scan.last_evaluated ? new Date(scan.last_evaluated).toLocaleString() : "never"}
               </p>
               <div className="button-row">
-                <button onClick={() => void evaluateScan(scan.id)}>Evaluate</button>
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void evaluateScan(scan.id);
+                  }}
+                >
+                  Evaluate
+                </button>
                 {scan.is_preset ? (
-                  <button onClick={() => void togglePresetHidden(scan)}>{scan.is_hidden ? "Unhide" : "Hide"}</button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void togglePresetHidden(scan);
+                    }}
+                  >
+                    {scan.is_hidden ? "Unhide" : "Hide"}
+                  </button>
                 ) : (
-                  <button className="danger" onClick={() => void deleteScan(scan.id)}>
+                  <button
+                    className="danger"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void deleteScan(scan.id);
+                    }}
+                  >
                     Delete
                   </button>
                 )}
@@ -469,10 +494,16 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
           <h3>
             {selectedScan ? selectedScan.name : "Scan Results"}
           </h3>
-          <small className="muted">{results.length} evaluated • {previewResults.length} preview</small>
+          <small className="muted">{selectedResults.length} evaluated • {previewResults.length} preview</small>
         </div>
         {status ? <p className="success">{status}</p> : null}
         {error ? <p className="error">{error}</p> : null}
+
+        {selectedScan ? (
+          <div className="button-row">
+            <button onClick={() => void evaluateScan(selectedScan.id)}>Evaluate Selected</button>
+          </div>
+        ) : null}
 
         {previewResults.length > 0 ? (
           <>
@@ -502,11 +533,11 @@ export default function ScansPage({ session, onSession }: ScansPageProps) {
           </>
         ) : null}
 
-        {results.length > 0 ? (
+        {selectedResults.length > 0 ? (
           <>
             <h3>Evaluated Results</h3>
             <div className="player-list">
-              {results.map((player) => {
+              {selectedResults.map((player) => {
                 const score = Math.max(0, Math.min(100, Math.round(player.current_streamer_score)));
                 const ringStyle: CSSProperties = {
                   background: `conic-gradient(${scoreColor(score)} ${score}%, rgba(255,255,255,0.14) 0)`,
