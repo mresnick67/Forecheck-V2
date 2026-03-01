@@ -136,8 +136,21 @@ async def yahoo_callback(
           <body>
             <div class=\"card\">
               <h1>Yahoo Connected</h1>
-              <p>You can close this tab and return to the app.</p>
+              <p>Connection complete. Returning to the app...</p>
             </div>
+            <script>
+              try {
+                if (window.opener) {
+                  window.opener.postMessage({ type: "forecheck-yahoo-connected" }, "*");
+                  window.close();
+                }
+                setTimeout(function () {
+                  window.location.href = "/";
+                }, 1200);
+              } catch (e) {
+                window.location.href = "/";
+              }
+            </script>
           </body>
         </html>
         """,

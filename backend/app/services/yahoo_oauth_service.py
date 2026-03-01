@@ -177,7 +177,7 @@ async def exchange_code_for_tokens(code: str) -> YahooTokenResponse:
             data={
                 "client_id": settings.yahoo_client_id,
                 "client_secret": settings.yahoo_client_secret,
-                "redirect_uri": settings.yahoo_redirect_uri,
+                "redirect_uri": settings.resolved_yahoo_redirect_uri,
                 "code": code,
                 "grant_type": "authorization_code",
             },

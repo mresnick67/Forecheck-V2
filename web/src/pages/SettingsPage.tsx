@@ -16,16 +16,25 @@ type AdminStatus = {
   app_mode: string;
   run_sync_loop: boolean;
   nhl_sync_enabled: boolean;
+  yahoo_enabled: boolean;
+  yahoo_connected: boolean;
   current_season_id: string;
   last_game_log_sync_at?: string | null;
   last_rolling_stats_at?: string | null;
   last_scan_counts_at?: string | null;
+  last_ownership_sync_at?: string | null;
   game_log_checkpoint_date?: string | null;
   game_log_row_count: number;
   game_log_min_date?: string | null;
   game_log_max_date?: string | null;
   running_jobs: string[];
   recent_runs: AdminRun[];
+};
+
+type YahooConnectionStatus = {
+  connected: boolean;
+  yahoo_user_guid?: string | null;
+  expires_at?: string | null;
 };
 
 type BeforeInstallPromptEvent = Event & {
@@ -41,6 +50,7 @@ type SettingsPageProps = {
 export default function SettingsPage({ session, onSession }: SettingsPageProps) {
   const [user, setUser] = useState<User | null>(null);
   const [adminStatus, setAdminStatus] = useState<AdminStatus | null>(null);
+  const [yahooStatus, setYahooStatus] = useState<YahooConnectionStatus | null>(null);
   const [deferredInstall, setDeferredInstall] = useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState<boolean>(() => {
     const nav = navigator as Navigator & { standalone?: boolean };
@@ -49,12 +59,33 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  function getErrorMessage(err: unknown, fallback: string): string {
+    if (!(err instanceof Error)) return fallback;
+    try {
+      const payload = JSON.parse(err.message);
+      if (payload && typeof payload.detail === "string") return payload.detail;
+    } catch {
+      // Keep original message when body is not JSON.
+    }
+    return err.message || fallback;
+  }
+
   async function loadAdminStatus() {
     try {
       const payload = await authRequest<AdminStatus>("/admin/status", session, onSession);
       setAdminStatus(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load admin status");
+      setError(getErrorMessage(err, "Failed to load admin status"));
+    }
+  }
+
+  async function loadYahooStatus() {
+    try {
+      const payload = await authRequest<YahooConnectionStatus>("/auth/yahoo/status", session, onSession);
+      setYahooStatus(payload);
+    } catch (err) {
+      setYahooStatus(null);
+      setError(getErrorMessage(err, "Failed to load Yahoo connection status"));
     }
   }
 
@@ -64,12 +95,13 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
         const me = await authRequest<User>("/auth/me", session, onSession);
         setUser(me);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load profile");
+        setError(getErrorMessage(err, "Failed to load profile"));
       }
     }
 
     void loadProfile();
     void loadAdminStatus();
+    void loadYahooStatus();
   }, [session, onSession]);
 
   useEffect(() => {
@@ -89,15 +121,24 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       setIsStandalone(window.matchMedia("(display-mode: standalone)").matches || Boolean(nav.standalone));
     }
 
+    function onMessage(event: MessageEvent) {
+      if (!event.data || event.data.type !== "forecheck-yahoo-connected") return;
+      setStatus("Yahoo authorization completed.");
+      void loadYahooStatus();
+      void loadAdminStatus();
+    }
+
     window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt as EventListener);
     window.addEventListener("appinstalled", onInstalled);
     window.addEventListener("focus", updateStandalone);
+    window.addEventListener("message", onMessage);
     return () => {
       window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt as EventListener);
       window.removeEventListener("appinstalled", onInstalled);
       window.removeEventListener("focus", updateStandalone);
+      window.removeEventListener("message", onMessage);
     };
-  }, []);
+  }, [session]);
 
   async function runPipeline() {
     setError(null);
@@ -115,7 +156,7 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       );
       await loadAdminStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Pipeline failed");
+      setError(getErrorMessage(err, "Pipeline failed"));
     }
   }
 
@@ -134,7 +175,7 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       );
       await loadAdminStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Full backfill failed");
+      setError(getErrorMessage(err, "Full backfill failed"));
     }
   }
 
@@ -151,7 +192,67 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       setStatus(`Scan counts refreshed for ${payload.length} scans.`);
       await loadAdminStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Scan count refresh failed");
+      setError(getErrorMessage(err, "Scan count refresh failed"));
+    }
+  }
+
+  async function connectYahoo() {
+    setError(null);
+    setStatus(null);
+    try {
+      const payload = await authRequest<{ authorization_url: string }>(
+        "/auth/yahoo/login?redirect=false",
+        session,
+        onSession,
+      );
+      const popup = window.open(payload.authorization_url, "forecheck-yahoo-auth", "width=680,height=800");
+      if (!popup) {
+        window.location.href = payload.authorization_url;
+        return;
+      }
+      popup.focus();
+      setStatus("Yahoo authorization opened in popup.");
+    } catch (err) {
+      setError(getErrorMessage(err, "Failed to open Yahoo authorization"));
+    }
+  }
+
+  async function disconnectYahoo() {
+    setError(null);
+    setStatus(null);
+    try {
+      await authRequest("/auth/yahoo/disconnect", session, onSession, { method: "POST" });
+      setStatus("Yahoo disconnected.");
+      await loadYahooStatus();
+      await loadAdminStatus();
+    } catch (err) {
+      setError(getErrorMessage(err, "Failed to disconnect Yahoo"));
+    }
+  }
+
+  async function refreshYahooToken() {
+    setError(null);
+    setStatus(null);
+    try {
+      await authRequest("/auth/yahoo/refresh", session, onSession, { method: "POST" });
+      setStatus("Yahoo token refreshed.");
+      await loadYahooStatus();
+    } catch (err) {
+      setError(getErrorMessage(err, "Failed to refresh Yahoo token"));
+    }
+  }
+
+  async function syncYahooOwnership() {
+    setError(null);
+    setStatus(null);
+    try {
+      const payload = await authRequest<{ updated: number }>("/admin/sync/ownership", session, onSession, {
+        method: "POST",
+      });
+      setStatus(`Yahoo ownership synced for ${payload.updated} players.`);
+      await loadAdminStatus();
+    } catch (err) {
+      setError(getErrorMessage(err, "Yahoo ownership sync failed"));
     }
   }
 
@@ -181,7 +282,7 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
       onSession(refreshed);
       setStatus("Session token refreshed.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Refresh failed");
+      setError(getErrorMessage(err, "Refresh failed"));
     }
   }
 
@@ -249,6 +350,7 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
               <li>Last game-log sync: {adminStatus.last_game_log_sync_at ?? "n/a"}</li>
               <li>Last rolling-stats sync: {adminStatus.last_rolling_stats_at ?? "n/a"}</li>
               <li>Last scan-count refresh: {adminStatus.last_scan_counts_at ?? "n/a"}</li>
+              <li>Last Yahoo ownership sync: {adminStatus.last_ownership_sync_at ?? "n/a"}</li>
             </ul>
           </>
         ) : (
@@ -256,6 +358,41 @@ export default function SettingsPage({ session, onSession }: SettingsPageProps) 
         )}
 
         {status ? <p className="success">{status}</p> : null}
+      </section>
+
+      <section className="card">
+        <h2>Yahoo Integration</h2>
+        <p className="muted">Connect Yahoo from this device and sync ownership into streamer workflows.</p>
+
+        {adminStatus?.yahoo_enabled ? (
+          <>
+            <ul>
+              <li>Enabled: Yes</li>
+              <li>Connected: {yahooStatus?.connected ? "Yes" : "No"}</li>
+              <li>Yahoo GUID: {yahooStatus?.yahoo_user_guid ?? "n/a"}</li>
+              <li>Token expires: {yahooStatus?.expires_at ?? "n/a"}</li>
+            </ul>
+            <div className="button-row">
+              <button className="primary" onClick={() => void connectYahoo()}>
+                Connect Yahoo
+              </button>
+              <button onClick={() => void refreshYahooToken()} disabled={!yahooStatus?.connected}>
+                Refresh Yahoo Token
+              </button>
+              <button onClick={() => void syncYahooOwnership()} disabled={!yahooStatus?.connected}>
+                Sync Yahoo Ownership
+              </button>
+              <button className="danger" onClick={() => void disconnectYahoo()} disabled={!yahooStatus?.connected}>
+                Disconnect Yahoo
+              </button>
+              <button onClick={() => void loadYahooStatus()}>Refresh Yahoo Status</button>
+            </div>
+          </>
+        ) : (
+          <p className="muted">
+            Yahoo is disabled. Set `YAHOO_ENABLED=true` plus Yahoo client env vars in `docker-compose.yml`, then restart.
+          </p>
+        )}
       </section>
 
       {error ? <p className="error">{error}</p> : null}
